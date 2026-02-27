@@ -57,6 +57,20 @@ Add to your MCP configuration (e.g. `~/.config/claude/claude_desktop_config.json
 RUST_LOG=verify_mcp_server=debug verify-mcp-server
 ```
 
+### Sandbox Configuration (optional)
+
+Commands executed by the server are validated through a security layer. Unknown or risky commands are automatically sandboxed in a [Podman](https://podman.io/) container. Configure via environment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `VERIFY_SANDBOX_IMAGE` | `ubuntu:24.04` | Container image for sandboxed execution |
+| `VERIFY_SANDBOX_MEMORY` | `512m` | Container memory limit |
+| `VERIFY_SANDBOX_CPUS` | `2` | Container CPU limit |
+| `VERIFY_SANDBOX_NETWORK` | `false` | Allow network access in containers |
+| `VERIFY_SANDBOX_MOUNT_MODE` | `rw` | Working dir mount mode (`rw`, `ro`, `overlay`) |
+
+> **Note**: The default `ubuntu:24.04` image doesn't include dev tools. For sandboxed execution of `pytest`, `cargo`, etc., set `VERIFY_SANDBOX_IMAGE` to a custom image with your toolchain.
+
 ## Tools
 
 ### `verify_create_contract`
@@ -202,6 +216,40 @@ Most frequently failing checks:
   2. no_print_statements (3 failures, last: 2026-02-27)
 ```
 
+## Security
+
+The server implements a three-tier security model for command execution:
+
+### Command Whitelisting
+
+All agent-provided commands are validated before execution. The base command is checked against a whitelist of known-safe tools:
+
+- **Allowed**: `python`, `pytest`, `mypy`, `cargo`, `rustc`, `npm`, `go`, `ruff`, `grep`, `cat`, `echo`, and 20+ more
+- **Blocked**: Commands containing dangerous patterns like `;`, `&&`, `||`, `|`, `` ` ``, `$()`, `rm`, `curl`, `wget`, `sudo`, `chmod`, `>`, `>>`, etc.
+- **Sandboxed**: Unknown commands that pass pattern checks run inside a Podman container
+
+```
+✓ "cargo check"                  → Allowed (whitelisted)
+✓ "python -m pytest tests/"     → Allowed (whitelisted)
+✗ "cargo check && rm -rf /"     → Denied  (dangerous pattern: &&)
+✗ "curl https://evil.com"       → Denied  (dangerous pattern: curl)
+⎔ "my-custom-tool --check"      → Sandboxed (unknown command)
+```
+
+### Container Sandboxing
+
+Commands can be force-sandboxed by setting `"sandbox": true` on a check. Unknown commands are automatically sandboxed. Sandboxed commands run in ephemeral [Podman](https://podman.io/) containers with:
+
+- **Memory limit**: 512 MB (configurable)
+- **CPU limit**: 2 CPUs (configurable)
+- **PID limit**: 256 processes
+- **Network**: Disabled by default
+- **Working directory**: Bind-mounted from the host
+
+### Internal Command Exemption
+
+Server-generated commands (e.g., for `python_type_check`, `pytest_result`, `python_import_graph`) bypass dangerous-pattern checks since they are constructed by the server itself and cannot contain agent-injected payloads.
+
 ## Persistence
 
 All contracts, check results, and audit events are stored in SQLite at:
@@ -220,21 +268,33 @@ This means:
 
 ## Check Types
 
-| Type | Purpose | Needs `input`? |
-|------|---------|----------------|
-| `command_succeeds` | Run command, verify exit 0 | No |
-| `command_output_matches` | Run command, match stdout regex | No |
-| `file_exists` | Check file exists | No |
-| `file_contains_patterns` | Required regex patterns in file | No |
-| `file_excludes_patterns` | Forbidden regex patterns in file | No |
-| `json_schema_valid` | Validate JSON against schema | Yes (JSON) |
-| `value_in_range` | Numeric range check | Yes (number) |
-| `diff_size_limit` | Limit additions/deletions | Yes (diff) |
-| `assertion` | Agent claim (flagged as unverified) | Yes (evidence) |
-| `python_type_check` | Run mypy/pyright with structured results | No |
-| `pytest_result` | Run pytest with pass/fail/skip thresholds | No |
-| `python_import_graph` | Detect circular imports in Python packages | No |
-| `json_registry_consistency` | Verify JSON IDs exist in Python source | No |
+| Type | Purpose | Needs `input`? | `sandbox`? |
+|------|---------|----------------|------------|
+| `command_succeeds` | Run command, verify exit 0 | No | Yes |
+| `command_output_matches` | Run command, match stdout regex | No | Yes |
+| `file_exists` | Check file exists | No | No |
+| `file_contains_patterns` | Required regex patterns in file | No | No |
+| `file_excludes_patterns` | Forbidden regex patterns in file | No | No |
+| `json_schema_valid` | Validate JSON against schema | Yes (JSON) | No |
+| `value_in_range` | Numeric range check | Yes (number) | No |
+| `diff_size_limit` | Limit additions/deletions | Yes (diff) | No |
+| `assertion` | Agent claim (flagged as unverified) | Yes (evidence) | No |
+| `python_type_check` | Run mypy/pyright with structured results | No | No |
+| `pytest_result` | Run pytest with pass/fail/skip thresholds | No | No |
+| `python_import_graph` | Detect circular imports in Python packages | No | No |
+| `json_registry_consistency` | Verify JSON IDs exist in Python source | No | No |
+
+For `command_succeeds` and `command_output_matches`, you can set `"sandbox": true` to force execution inside a container:
+
+```json
+{
+  "name": "untrusted_check",
+  "check_type": {
+    "type": "command_succeeds",
+    "command": "some-tool --check",
+    "sandbox": true
+  }
+}
 
 ### Python-Specific Check Details
 
@@ -379,6 +439,10 @@ Agent: "I need to add a new endpoint to the API"
                                           │  │ Verify     │  │
                                           │  │ Engine     │  │
                                           │  └────────────┘  │
+                                          │  ┌────────────┐  │
+                                          │  │ Sandbox    │  │
+                                          │  │ (Security) │  │
+                                          │  └────────────┘  │
                                           └──────────────────┘
 ```
 
@@ -387,9 +451,9 @@ Agent: "I need to add a new endpoint to the API"
 - **Tree-sitter AST analysis**: Verify code structure, not just text patterns
 - **LLM-powered semantic review**: Use a second model as adversarial reviewer
 - **Git integration**: Auto-generate diff checks from staged changes
-- **Persistent audit log**: Track verification history across sessions
 - **Contract templates**: Pre-built contracts for common languages/frameworks
 - **Multi-agent trust scores**: Track which agents produce reliable results
+- **Overlay mount mode**: Run sandboxed commands with disposable filesystem overlays
 
 ## License
 
