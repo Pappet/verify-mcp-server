@@ -1,0 +1,72 @@
+{
+  "description": "Verify new Rust module addition",
+  "task": "Add a health check endpoint to the HTTP server",
+  "checks": [
+    {
+      "name": "compiles",
+      "check_type": {
+        "type": "command_succeeds",
+        "command": "cargo check --all-targets",
+        "working_dir": "/home/user/my-project",
+        "timeout_secs": 120
+      }
+    },
+    {
+      "name": "tests_pass",
+      "check_type": {
+        "type": "command_succeeds",
+        "command": "cargo test",
+        "working_dir": "/home/user/my-project",
+        "timeout_secs": 120
+      }
+    },
+    {
+      "name": "clippy_clean",
+      "check_type": {
+        "type": "command_succeeds",
+        "command": "cargo clippy -- -D warnings",
+        "working_dir": "/home/user/my-project",
+        "timeout_secs": 120
+      },
+      "severity": "warning"
+    },
+    {
+      "name": "module_file_exists",
+      "check_type": {
+        "type": "file_exists",
+        "path": "/home/user/my-project/src/routes/health.rs"
+      }
+    },
+    {
+      "name": "handler_function_defined",
+      "check_type": {
+        "type": "file_contains_patterns",
+        "path": "/home/user/my-project/src/routes/health.rs",
+        "required_patterns": [
+          "pub\\s+(async\\s+)?fn\\s+health_check",
+          "StatusCode|status|200"
+        ]
+      }
+    },
+    {
+      "name": "no_unwrap_in_handlers",
+      "check_type": {
+        "type": "file_excludes_patterns",
+        "path": "/home/user/my-project/src/routes/health.rs",
+        "forbidden_patterns": [
+          "\\.unwrap\\(\\)",
+          "\\.expect\\("
+        ]
+      }
+    },
+    {
+      "name": "diff_is_focused",
+      "check_type": {
+        "type": "diff_size_limit",
+        "max_additions": 150,
+        "max_deletions": 30
+      },
+      "severity": "warning"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "verify": {
+      "command": "/path/to/verify-mcp-server",
+      "env": {
+        "RUST_LOG": "verify_mcp_server=info"
+      }
+    }
+  }
+}
