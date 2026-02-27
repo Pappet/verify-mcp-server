@@ -19,17 +19,17 @@ pub async fn run_contract(contract: &Contract, input: Option<&str>) -> Vec<Check
 
         let check_result = CheckResult {
             check_name: check.name.clone(),
-            passed: result.passed,
+            status: result.status,
             severity: check.severity.clone(),
             message: result.message,
             details: result.details,
             duration_ms,
         };
 
-        if check_result.passed {
+        if check_result.status == CheckStatus::Passed {
             info!(check = %check.name, "✓ Check passed");
         } else {
-            warn!(check = %check.name, severity = ?check.severity, "✗ Check failed");
+            warn!(check = %check.name, severity = ?check.severity, "✗ Check failed or unverified");
         }
 
         results.push(check_result);
@@ -42,10 +42,16 @@ pub async fn run_contract(contract: &Contract, input: Option<&str>) -> Vec<Check
 pub fn determine_status(results: &[CheckResult]) -> ContractStatus {
     let has_error_failure = results
         .iter()
-        .any(|r| !r.passed && r.severity == Severity::Error);
+        .any(|r| r.status == CheckStatus::Failed && r.severity == Severity::Error);
+
+    let has_unverified = results
+        .iter()
+        .any(|r| r.status == CheckStatus::Unverified);
 
     if has_error_failure {
         ContractStatus::Failed
+    } else if has_unverified {
+        ContractStatus::ReviewRequired
     } else {
         ContractStatus::Passed
     }
@@ -54,7 +60,7 @@ pub fn determine_status(results: &[CheckResult]) -> ContractStatus {
 // ── Internal ────────────────────────────────────────────────────────
 
 struct RawResult {
-    passed: bool,
+    status: CheckStatus,
     message: String,
     details: Option<String>,
 }
@@ -169,7 +175,7 @@ async fn run_command_succeeds(
             let passed = code == 0;
             let combined = format!("stdout:\n{stdout}\nstderr:\n{stderr}");
             RawResult {
-                passed,
+                status: if passed { CheckStatus::Passed } else { CheckStatus::Failed },
                 message: if passed {
                     format!("Command succeeded (exit code 0)")
                 } else {
@@ -179,7 +185,7 @@ async fn run_command_succeeds(
             }
         }
         Err(e) => RawResult {
-            passed: false,
+            status: CheckStatus::Failed,
             message: format!("Command execution error: {e}"),
             details: None,
         },
@@ -197,7 +203,7 @@ async fn run_command_output_matches(
         Ok(r) => r,
         Err(e) => {
             return RawResult {
-                passed: false,
+                status: CheckStatus::Failed,
                 message: format!("Invalid regex pattern: {e}"),
                 details: None,
             }
@@ -209,7 +215,7 @@ async fn run_command_output_matches(
             let matches = re.is_match(&stdout);
             let combined = format!("stdout:\n{stdout}\nstderr:\n{stderr}");
             RawResult {
-                passed: code == 0 && matches,
+                status: if code == 0 && matches { CheckStatus::Passed } else { CheckStatus::Failed },
                 message: if code != 0 {
                     format!("Command failed with exit code {code}")
                 } else if matches {
@@ -221,7 +227,7 @@ async fn run_command_output_matches(
             }
         }
         Err(e) => RawResult {
-            passed: false,
+            status: CheckStatus::Failed,
             message: format!("Command execution error: {e}"),
             details: None,
         },
@@ -231,7 +237,7 @@ async fn run_command_output_matches(
 fn check_file_exists(path: &str) -> RawResult {
     let exists = Path::new(path).exists();
     RawResult {
-        passed: exists,
+        status: if exists { CheckStatus::Passed } else { CheckStatus::Failed },
         message: if exists {
             format!("File exists: {path}")
         } else {
@@ -246,7 +252,7 @@ fn check_file_contains_patterns(path: &str, patterns: &[String]) -> RawResult {
         Ok(c) => c,
         Err(e) => {
             return RawResult {
-                passed: false,
+                status: CheckStatus::Failed,
                 message: format!("Cannot read file '{path}': {e}"),
                 details: None,
             }
@@ -269,13 +275,13 @@ fn check_file_contains_patterns(path: &str, patterns: &[String]) -> RawResult {
 
     if missing.is_empty() {
         RawResult {
-            passed: true,
+            status: CheckStatus::Passed,
             message: format!("All {} required patterns found in {path}", patterns.len()),
             details: None,
         }
     } else {
         RawResult {
-            passed: false,
+            status: CheckStatus::Failed,
             message: format!(
                 "{} of {} patterns missing in {path}",
                 missing.len(),
@@ -291,7 +297,7 @@ fn check_file_excludes_patterns(path: &str, patterns: &[String]) -> RawResult {
         Ok(c) => c,
         Err(e) => {
             return RawResult {
-                passed: false,
+                status: CheckStatus::Failed,
                 message: format!("Cannot read file '{path}': {e}"),
                 details: None,
             }
@@ -314,13 +320,13 @@ fn check_file_excludes_patterns(path: &str, patterns: &[String]) -> RawResult {
 
     if found.is_empty() {
         RawResult {
-            passed: true,
+            status: CheckStatus::Passed,
             message: format!("None of the {} forbidden patterns found in {path}", patterns.len()),
             details: None,
         }
     } else {
         RawResult {
-            passed: false,
+            status: CheckStatus::Failed,
             message: format!(
                 "{} forbidden pattern(s) found in {path}",
                 found.len()
@@ -335,7 +341,7 @@ fn check_json_schema(input: Option<&str>, schema_str: &str) -> RawResult {
         Some(i) => i,
         None => {
             return RawResult {
-                passed: false,
+                status: CheckStatus::Failed,
                 message: "No input provided for JSON schema validation".into(),
                 details: Some("Pass the JSON to validate in the 'input' field".into()),
             }
@@ -346,7 +352,7 @@ fn check_json_schema(input: Option<&str>, schema_str: &str) -> RawResult {
         Ok(v) => v,
         Err(e) => {
             return RawResult {
-                passed: false,
+                status: CheckStatus::Failed,
                 message: format!("Input is not valid JSON: {e}"),
                 details: Some(truncate(input, 500)),
             }
@@ -357,7 +363,7 @@ fn check_json_schema(input: Option<&str>, schema_str: &str) -> RawResult {
         Ok(v) => v,
         Err(e) => {
             return RawResult {
-                passed: false,
+                status: CheckStatus::Failed,
                 message: format!("Schema is not valid JSON: {e}"),
                 details: None,
             }
@@ -367,12 +373,12 @@ fn check_json_schema(input: Option<&str>, schema_str: &str) -> RawResult {
     // Simple structural validation (full jsonschema crate can be added later)
     match validate_json_structure(&instance, &schema) {
         Ok(()) => RawResult {
-            passed: true,
+            status: CheckStatus::Passed,
             message: "JSON validates against schema".into(),
             details: None,
         },
         Err(errors) => RawResult {
-            passed: false,
+            status: CheckStatus::Failed,
             message: format!("JSON schema validation failed: {} error(s)", errors.len()),
             details: Some(errors.join("\n")),
         },
@@ -440,7 +446,7 @@ fn check_value_in_range(input: Option<&str>, min: Option<f64>, max: Option<f64>)
         Some(i) => i,
         None => {
             return RawResult {
-                passed: false,
+                status: CheckStatus::Failed,
                 message: "No input provided for range check".into(),
                 details: None,
             }
@@ -451,7 +457,7 @@ fn check_value_in_range(input: Option<&str>, min: Option<f64>, max: Option<f64>)
         Ok(v) => v,
         Err(e) => {
             return RawResult {
-                passed: false,
+                status: CheckStatus::Failed,
                 message: format!("Cannot parse '{input}' as number: {e}"),
                 details: None,
             }
@@ -470,7 +476,7 @@ fn check_value_in_range(input: Option<&str>, min: Option<f64>, max: Option<f64>)
     };
 
     RawResult {
-        passed,
+        status: if passed { CheckStatus::Passed } else { CheckStatus::Failed },
         message: if passed {
             format!("Value {value} is within range {range_str}")
         } else {
@@ -489,7 +495,7 @@ fn check_diff_size(
         Some(i) => i,
         None => {
             return RawResult {
-                passed: false,
+                status: CheckStatus::Failed,
                 message: "No diff input provided. Pass a unified diff in the 'input' field.".into(),
                 details: None,
             }
@@ -525,7 +531,7 @@ fn check_diff_size(
     }
 
     RawResult {
-        passed,
+        status: if passed { CheckStatus::Passed } else { CheckStatus::Failed },
         message: if passed {
             format!("Diff size OK: +{additions} -{deletions} lines")
         } else {
@@ -540,14 +546,14 @@ fn handle_assertion(claim: &str, input: Option<&str>) -> RawResult {
     // We record it but flag that it's not independently verified.
     match input {
         Some(evidence) if !evidence.trim().is_empty() => RawResult {
-            passed: true,
+            status: CheckStatus::Unverified,
             message: format!("Assertion recorded (UNVERIFIED): {claim}"),
             details: Some(format!(
                 "⚠ Agent-provided evidence (not independently verified):\n{evidence}"
             )),
         },
         _ => RawResult {
-            passed: false,
+            status: CheckStatus::Failed,
             message: format!("Assertion WITHOUT evidence: {claim}"),
             details: Some(
                 "Agent made a claim but provided no evidence. This is exactly the blind-trust \
@@ -633,7 +639,7 @@ async fn check_python_types(
             };
 
             RawResult {
-                passed,
+                status: if passed { CheckStatus::Passed } else { CheckStatus::Failed },
                 message: if passed {
                     format!("{checker_cmd}: no type errors ({warnings} warnings)")
                 } else {
@@ -643,7 +649,7 @@ async fn check_python_types(
             }
         }
         Err(e) => RawResult {
-            passed: false,
+            status: CheckStatus::Failed,
             message: format!("{checker_cmd} execution failed: {e}. Is {checker_cmd} installed?"),
             details: Some(format!(
                 "Hint: Install with `pip install {}`",
@@ -866,7 +872,7 @@ async fn check_pytest_result(
             }
 
             RawResult {
-                passed,
+                status: if passed { CheckStatus::Passed } else { CheckStatus::Failed },
                 message: if passed {
                     format!(
                         "pytest: {passed_count} passed, {skipped_count} skipped — all thresholds met"
@@ -884,7 +890,7 @@ async fn check_pytest_result(
             }
         }
         Err(e) => RawResult {
-            passed: false,
+            status: CheckStatus::Failed,
             message: format!("pytest execution failed: {e}"),
             details: None,
         },
@@ -1043,7 +1049,7 @@ print(json.dumps(result))
                     }
 
                     RawResult {
-                        passed,
+                        status: if passed { CheckStatus::Passed } else { CheckStatus::Failed },
                         message: if cycle_count == 0 {
                             format!(
                                 "No circular imports in {root_path} ({total_modules} modules scanned)"
@@ -1061,14 +1067,14 @@ print(json.dumps(result))
                     }
                 }
                 Err(e) => RawResult {
-                    passed: false,
+                    status: CheckStatus::Failed,
                     message: format!("Failed to parse import graph output: {e}"),
                     details: Some(format!("stdout: {stdout}\nstderr: {stderr}")),
                 },
             }
         }
         Err(e) => RawResult {
-            passed: false,
+            status: CheckStatus::Failed,
             message: format!("Import graph analysis failed: {e}"),
             details: None,
         },
@@ -1086,7 +1092,7 @@ fn check_json_registry_consistency(
         Ok(c) => c,
         Err(e) => {
             return RawResult {
-                passed: false,
+                status: CheckStatus::Failed,
                 message: format!("Cannot read JSON file '{json_path}': {e}"),
                 details: None,
             }
@@ -1097,7 +1103,7 @@ fn check_json_registry_consistency(
         Ok(v) => v,
         Err(e) => {
             return RawResult {
-                passed: false,
+                status: CheckStatus::Failed,
                 message: format!("Invalid JSON in '{json_path}': {e}"),
                 details: None,
             }
@@ -1110,7 +1116,7 @@ fn check_json_registry_consistency(
 
     if ids.is_empty() {
         return RawResult {
-            passed: false,
+            status: CheckStatus::Failed,
             message: format!("No '{id_field}' fields found in {json_path}"),
             details: Some(format!("Expected to find fields named '{id_field}' in the JSON structure")),
         };
@@ -1121,7 +1127,7 @@ fn check_json_registry_consistency(
         Ok(c) => c,
         Err(e) => {
             return RawResult {
-                passed: false,
+                status: CheckStatus::Failed,
                 message: format!("Cannot read source file '{source_path}': {e}"),
                 details: None,
             }
@@ -1174,7 +1180,7 @@ fn check_json_registry_consistency(
     }
 
     RawResult {
-        passed,
+        status: if passed { CheckStatus::Passed } else { CheckStatus::Failed },
         message: if passed {
             format!(
                 "All {} ID(s) from {json_path} found in {source_path}",

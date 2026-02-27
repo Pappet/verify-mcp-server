@@ -332,11 +332,12 @@ async fn handle_run_contract(args: &Value, store: &Storage) -> ToolResult {
     }
 
     // Build summary
-    let passed_count = results.iter().filter(|r| r.passed).count();
-    let failed_count = results.iter().filter(|r| !r.passed).count();
+    let passed_count = results.iter().filter(|r| r.status == CheckStatus::Passed).count();
+    let failed_count = results.iter().filter(|r| r.status == CheckStatus::Failed).count();
+    let unverified_count = results.iter().filter(|r| r.status == CheckStatus::Unverified).count();
     let warnings = results
         .iter()
-        .filter(|r| !r.passed && r.severity == Severity::Warning)
+        .filter(|r| r.status == CheckStatus::Failed && r.severity == Severity::Warning)
         .count();
     let total_ms: u64 = results.iter().map(|r| r.duration_ms).sum();
 
@@ -345,7 +346,7 @@ async fn handle_run_contract(args: &Value, store: &Storage) -> ToolResult {
         .map(|r| {
             json!({
                 "check": r.check_name,
-                "passed": r.passed,
+                "status": r.status,
                 "severity": r.severity,
                 "message": r.message,
                 "details": r.details,
@@ -359,6 +360,10 @@ async fn handle_run_contract(args: &Value, store: &Storage) -> ToolResult {
             format!("⚠ PASSED with {warnings} warning(s) — review recommended")
         }
         ContractStatus::Passed => "✓ ALL CHECKS PASSED".into(),
+        ContractStatus::ReviewRequired => format!(
+            "⚠ REVIEW REQUIRED — {unverified_count} check(s) unverified. \
+             Please review manually."
+        ),
         ContractStatus::Failed => format!(
             "✗ CONTRACT FAILED — {failed_count} check(s) did not pass. \
              Do NOT proceed with this result."
@@ -374,6 +379,7 @@ async fn handle_run_contract(args: &Value, store: &Storage) -> ToolResult {
             "total_checks": results.len(),
             "passed": passed_count,
             "failed": failed_count,
+            "unverified": unverified_count,
             "warnings": warnings,
             "total_duration_ms": total_ms,
         },
@@ -409,7 +415,7 @@ async fn handle_quick_check(args: &Value) -> ToolResult {
     let result = &results[0];
 
     ToolResult::json(&json!({
-        "passed": result.passed,
+        "status": result.status,
         "check": result.check_name,
         "message": result.message,
         "details": result.details,
@@ -463,7 +469,11 @@ async fn handle_get_report(args: &Value, store: &Storage) -> ToolResult {
     } else {
         report.push_str("## Check Results\n\n");
         for result in &contract.results {
-            let icon = if result.passed { "✓" } else { "✗" };
+            let icon = match result.status {
+                CheckStatus::Passed => "✓",
+                CheckStatus::Failed => "✗",
+                CheckStatus::Unverified => "?",
+            };
             let severity_tag = match result.severity {
                 Severity::Error => "[ERROR]",
                 Severity::Warning => "[WARN]",

@@ -157,7 +157,7 @@ impl Storage {
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 contract_id     TEXT NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
                 check_name      TEXT NOT NULL,
-                passed          INTEGER NOT NULL,
+                status          TEXT NOT NULL,
                 severity        TEXT NOT NULL,
                 message         TEXT NOT NULL,
                 details         TEXT,
@@ -308,7 +308,7 @@ impl Storage {
         let mut stmt = conn
             .prepare(
                 "INSERT INTO check_results
-                 (contract_id, check_name, passed, severity, message, details, duration_ms, created_at)
+                 (contract_id, check_name, status, severity, message, details, duration_ms, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )
             .map_err(|e| format!("Prepare insert result: {e}"))?;
@@ -317,7 +317,7 @@ impl Storage {
             stmt.execute(params![
                 id,
                 r.check_name,
-                r.passed as i32,
+                check_status_to_str(&r.status),
                 severity_to_str(&r.severity),
                 r.message,
                 r.details,
@@ -334,9 +334,10 @@ impl Storage {
             _ => AuditEventType::VerificationStarted,
         };
         let detail = format!(
-            "{} passed, {} failed",
-            results.iter().filter(|r| r.passed).count(),
-            results.iter().filter(|r| !r.passed).count(),
+            "{} passed, {} failed, {} unverified",
+            results.iter().filter(|r| r.status == CheckStatus::Passed).count(),
+            results.iter().filter(|r| r.status == CheckStatus::Failed).count(),
+            results.iter().filter(|r| r.status == CheckStatus::Unverified).count(),
         );
         self.log_event_sync(&conn, id, event_type, Some(&detail))?;
 
@@ -483,8 +484,8 @@ impl Storage {
 
             // Load results for this contract
             let results = self.get_results_sync(&conn, &id)?;
-            let passed_checks = results.iter().filter(|r| r.passed).count();
-            let failed_checks = results.iter().filter(|r| !r.passed).count();
+            let passed_checks = results.iter().filter(|r| r.status == CheckStatus::Passed).count();
+            let failed_checks = results.iter().filter(|r| r.status == CheckStatus::Failed).count();
             let total_duration_ms: u64 = results.iter().map(|r| r.duration_ms).sum();
 
             entries.push(HistoryEntry {
@@ -548,7 +549,7 @@ impl Storage {
         // Check-level stats
         let (total_checks_run, total_check_failures, avg_duration) = conn
             .query_row(
-                "SELECT COUNT(*), SUM(CASE WHEN passed = 0 THEN 1 ELSE 0 END), AVG(duration_ms)
+                "SELECT COUNT(*), SUM(CASE WHEN status != 'passed' THEN 1 ELSE 0 END), AVG(duration_ms)
                  FROM check_results cr
                  JOIN contracts c ON cr.contract_id = c.id
                  WHERE c.created_at >= ?1",
@@ -569,7 +570,7 @@ impl Storage {
                 "SELECT cr.check_name, COUNT(*) as cnt, MAX(cr.created_at)
                  FROM check_results cr
                  JOIN contracts c ON cr.contract_id = c.id
-                 WHERE cr.passed = 0 AND c.created_at >= ?1
+                 WHERE cr.status = 'failed' AND c.created_at >= ?1
                  GROUP BY cr.check_name
                  ORDER BY cnt DESC
                  LIMIT 10",
@@ -662,7 +663,7 @@ impl Storage {
     ) -> Result<Vec<CheckResult>, String> {
         let mut stmt = conn
             .prepare(
-                "SELECT check_name, passed, severity, message, details, duration_ms
+                "SELECT check_name, status, severity, message, details, duration_ms
                  FROM check_results WHERE contract_id = ?1
                  ORDER BY id ASC",
             )
@@ -670,10 +671,11 @@ impl Storage {
 
         let rows = stmt
             .query_map(params![contract_id], |row| {
+                let status_str: String = row.get(1)?;
                 let severity_str: String = row.get(2)?;
                 Ok(CheckResult {
                     check_name: row.get(0)?,
-                    passed: row.get::<_, i32>(1)? != 0,
+                    status: str_to_check_status(&status_str),
                     severity: str_to_severity(&severity_str),
                     message: row.get(3)?,
                     details: row.get(4)?,
@@ -712,6 +714,7 @@ fn status_to_str(status: &ContractStatus) -> &'static str {
         ContractStatus::Passed => "passed",
         ContractStatus::Failed => "failed",
         ContractStatus::Running => "running",
+        ContractStatus::ReviewRequired => "review_required",
     }
 }
 
@@ -720,7 +723,25 @@ fn str_to_status(s: &str) -> ContractStatus {
         "passed" => ContractStatus::Passed,
         "failed" => ContractStatus::Failed,
         "running" => ContractStatus::Running,
+        "review_required" => ContractStatus::ReviewRequired,
         _ => ContractStatus::Pending,
+    }
+}
+
+fn check_status_to_str(status: &CheckStatus) -> &'static str {
+    match status {
+        CheckStatus::Passed => "passed",
+        CheckStatus::Failed => "failed",
+        CheckStatus::Unverified => "unverified",
+    }
+}
+
+fn str_to_check_status(s: &str) -> CheckStatus {
+    match s {
+        "passed" => CheckStatus::Passed,
+        "failed" => CheckStatus::Failed,
+        "unverified" => CheckStatus::Unverified,
+        _ => CheckStatus::Failed,
     }
 }
 

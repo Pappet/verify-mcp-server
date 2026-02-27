@@ -227,16 +227,26 @@ pub enum ContractStatus {
     Passed,
     /// At least one error-level check failed.
     Failed,
+    /// Verification requires manual review (e.g., due to unverified assertions).
+    ReviewRequired,
     /// Verification is currently running.
     Running,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum CheckStatus {
+    Passed,
+    Failed,
+    Unverified,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckResult {
     /// Name of the check.
     pub check_name: String,
-    /// Did it pass?
-    pub passed: bool,
+    /// Check status (passed, failed, unverified).
+    pub status: CheckStatus,
     /// Severity of this check.
     pub severity: Severity,
     /// Human-readable explanation of the result.
