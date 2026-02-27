@@ -56,6 +56,10 @@ pub enum CheckType {
         /// Optional timeout in seconds (default: 30).
         #[serde(default = "default_timeout")]
         timeout_secs: u64,
+        /// If true, force execution in a sandboxed container.
+        /// If false or absent, subject to whitelist validation.
+        #[serde(default)]
+        sandbox: Option<bool>,
     },
 
     /// Run a command and check that stdout matches a pattern.
@@ -67,6 +71,10 @@ pub enum CheckType {
         working_dir: Option<String>,
         #[serde(default = "default_timeout")]
         timeout_secs: u64,
+        /// If true, force execution in a sandboxed container.
+        /// If false or absent, subject to whitelist validation.
+        #[serde(default)]
+        sandbox: Option<bool>,
     },
 
     /// Check that a file exists.

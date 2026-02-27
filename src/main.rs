@@ -18,6 +18,7 @@
 
 mod contract;
 mod protocol;
+mod sandbox;
 mod storage;
 mod tools;
 mod verification;
