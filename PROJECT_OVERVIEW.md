@@ -4,9 +4,6 @@
 
 A **Rust-based MCP (Model Context Protocol) server** that provides **contract-based verification** for AI agents. It solves the "blind trust" problem — where AI agents accept tool outputs without checking them — by letting agents define expectations *before* work and verify results *after*.
 
-> [!TIP]
-> You are already using this server! It's the `verify` MCP server that powers `verify_create_contract`, `verify_run_contract`, and other verification tools.
-
 ---
 
 ## Project Stats
@@ -58,7 +55,7 @@ MCP protocol types: `JsonRpcRequest`, `JsonRpcResponse`, `ToolDefinition`, `Tool
 Data model for contracts and checks. Defines:
 - `Contract` — a set of expectations with metadata
 - `Check` — a single verifiable check with severity
-- `CheckType` — the 12 supported check types (commands, files, JSON schema, pytest, import graph, etc.)
+- `CheckType` — the 13 supported check types (commands, files, AstQuery, JSON schema, pytest, import graph w/ architecture rules, etc.)
 - `CheckResult` — contains a `CheckStatus` (`Passed`, `Failed`, `Unverified`).
 - `ContractStatus` — Overall health (`Pending`, `Running`, `Passed`, `Failed`, `ReviewRequired`).
 
@@ -66,7 +63,10 @@ Data model for contracts and checks. Defines:
 MCP tool definitions and call handlers. Exposes 8 tools (`verify_create_contract`, `verify_run_contract`, etc.). Analyzes check outcomes to enforce the `ReviewRequired` verdict.
 
 ### [verification.rs](file:///home/peter/Projekte/verify-mcp-server/src/verification.rs)
-The verification engine. Implements all 12 check evaluation mechanisms, mapping command and regex evaluations into strict `CheckStatus` results. Evaluates python types and tracks graph loops and missing items.
+The verification engine. Implements all 13 check evaluation mechanisms, including:
+- Command evaluations to strict `CheckStatus` results.
+- `AstQuery`: AST-based semantic analysis using `tree-sitter` to query code structure (bypassing text-formatting tricks).
+- `PythonImportGraph`: Extracts internal import relationships and verifies them against optional architectural rules.
 
 ### [storage.rs](file:///home/peter/Projekte/verify-mcp-server/src/storage.rs)
 SQLite-backed persistence. Stores contracts, check results (using the text mapping of `status`), and a full, queryable audit trail (including unused scaffolded `AuditEvent` hooks for future use).

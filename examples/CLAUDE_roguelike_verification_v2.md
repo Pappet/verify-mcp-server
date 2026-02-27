@@ -59,6 +59,9 @@ Replace `<CHANGED_FILE>` with actual path (e.g. `ecs/systems/ai_system.py`) and 
 
 ---
 
+> [!NOTE]
+> **Legacy Notice:** `file_contains_patterns` and `file_excludes_patterns` are considered legacy for source code verification. For code files (Python, Rust, etc.), prefer **`ast_query`** which uses `tree-sitter` for semantic analysis and is robust against format changes. The pattern checks remain useful for simple text files like READMEs or JSON logs.
+
 ## Check Templates by Area
 
 Add these checks **on top of the baseline** depending on what you're changing:
@@ -69,17 +72,20 @@ Add these checks **on top of the baseline** depending on what you're changing:
 {
   "name": "component_is_dataclass",
   "check_type": {
-    "type": "file_contains_patterns",
+    "type": "ast_query",
+    "language": "python",
     "path": "ecs/components.py",
-    "required_patterns": ["@dataclass\\s*\\n\\s*class <NewComponent>"]
+    "query": "macro:class_exists:<NewComponent>"
   }
 },
 {
   "name": "no_side_effect_methods_in_components",
   "check_type": {
-    "type": "file_excludes_patterns",
+    "type": "ast_query",
+    "language": "python",
     "path": "ecs/components.py",
-    "forbidden_patterns": ["esper\\.dispatch_event", "esper\\.create_entity", "esper\\.delete_entity"]
+    "query": "macro:imports_module:esper",
+    "mode": "forbidden"
   }
 }
 ```
@@ -97,9 +103,10 @@ Add these checks **on top of the baseline** depending on what you're changing:
 {
   "name": "processor_has_process_method",
   "check_type": {
-    "type": "file_contains_patterns",
+    "type": "ast_query",
+    "language": "python",
     "path": "ecs/systems/<system_file>.py",
-    "required_patterns": ["def process\\(self"]
+    "query": "macro:function_exists:process"
   }
 },
 {
@@ -219,9 +226,10 @@ If the system uses `MapAwareSystem`, add:
 {
   "name": "factory_function_exists",
   "check_type": {
-    "type": "file_contains_patterns",
+    "type": "ast_query",
+    "language": "python",
     "path": "entities/<factory_file>.py",
-    "required_patterns": ["def create\\("]
+    "query": "macro:function_exists:create"
   }
 },
 {
@@ -512,7 +520,7 @@ Task: "Add ScheduleSystem that processes NPC schedules during ENEMY_TURN"
     },
     {
       "name": "has_process_method",
-      "check_type": { "type": "file_contains_patterns", "path": "ecs/systems/schedule_system.py", "required_patterns": ["def process\\(self"] }
+      "check_type": { "type": "ast_query", "language": "python", "path": "ecs/systems/schedule_system.py", "query": "macro:function_exists:process" }
     },
     {
       "name": "queries_schedule_and_activity",

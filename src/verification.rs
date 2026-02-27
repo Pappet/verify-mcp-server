@@ -7,14 +7,18 @@ use std::path::Path;
 use std::time::Instant;
 use tokio::process::Command;
 use tracing::{debug, info, warn};
+use tree_sitter::StreamingIterator;
+
+pub type AstCache = std::collections::HashMap<String, tree_sitter::Tree>;
 
 /// Execute all checks in a contract and return results.
 pub async fn run_contract(contract: &Contract, input: Option<&str>) -> Vec<CheckResult> {
     let mut results = Vec::with_capacity(contract.checks.len());
+    let mut ast_cache = AstCache::new();
 
     for check in &contract.checks {
         let start = Instant::now();
-        let result = run_check(check, input).await;
+        let result = run_check(check, input, &mut ast_cache).await;
         let duration_ms = start.elapsed().as_millis() as u64;
 
         let check_result = CheckResult {
@@ -65,7 +69,7 @@ struct RawResult {
     details: Option<String>,
 }
 
-async fn run_check(check: &Check, input: Option<&str>) -> RawResult {
+async fn run_check(check: &Check, input: Option<&str>, ast_cache: &mut AstCache) -> RawResult {
     match &check.check_type {
         CheckType::CommandSucceeds {
             command,
@@ -104,6 +108,13 @@ async fn run_check(check: &Check, input: Option<&str>) -> RawResult {
             path,
             forbidden_patterns,
         } => check_file_excludes_patterns(path, forbidden_patterns),
+
+        CheckType::AstQuery {
+            path,
+            language,
+            query,
+            mode,
+        } => run_ast_query(path, language, query, mode, ast_cache).await,
 
         CheckType::JsonSchemaValid { schema } => check_json_schema(input, schema),
 
@@ -151,7 +162,8 @@ async fn run_check(check: &Check, input: Option<&str>) -> RawResult {
             root_path,
             fail_on_circular,
             working_dir,
-        } => check_python_import_graph(root_path, *fail_on_circular, working_dir.as_deref()).await,
+            enforced_architecture,
+        } => check_python_import_graph(root_path, *fail_on_circular, working_dir.as_deref(), enforced_architecture.as_deref()).await,
 
         CheckType::JsonRegistryConsistency {
             json_path,
@@ -564,6 +576,156 @@ fn handle_assertion(claim: &str, input: Option<&str>) -> RawResult {
     }
 }
 
+async fn run_ast_query(
+    path: &str,
+    language_str: &str,
+    query_str: &str,
+    mode: &QueryMode,
+    ast_cache: &mut AstCache,
+) -> RawResult {
+    // 1. Resolve Language
+    let language = match language_str.to_lowercase().as_str() {
+        "python" => tree_sitter_python::LANGUAGE.into(),
+        _ => return RawResult {
+            status: CheckStatus::Failed,
+            message: format!("Unsupported language for AstQuery: {language_str}"),
+            details: Some("Currently supported languages: python".into()),
+        }
+    };
+
+    // 2. Expand Macros or use raw query
+    let expanded_query = if query_str.starts_with("macro:") {
+        expand_ast_macro(query_str, language_str)
+    } else {
+        Ok(query_str.to_string())
+    };
+
+    let expanded_query = match expanded_query {
+        Ok(q) => q,
+        Err(e) => return RawResult {
+            status: CheckStatus::Failed,
+            message: format!("Failed to expand AST macro: {e}"),
+            details: None,
+        }
+    };
+
+    // 3. Parse Query
+    let query = match tree_sitter::Query::new(&language, &expanded_query) {
+        Ok(q) => q,
+        Err(e) => return RawResult {
+            status: CheckStatus::Failed,
+            message: format!("Invalid tree-sitter query: {e}"),
+            details: Some(expanded_query),
+        }
+    };
+
+    // 4. Get File Content & Syntax Tree
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => return RawResult {
+            status: CheckStatus::Failed,
+            message: format!("Cannot read file '{path}': {e}"),
+            details: None,
+        }
+    };
+
+    let tree = if let Some(t) = ast_cache.get(path) {
+        t.clone()
+    } else {
+        let mut parser = tree_sitter::Parser::new();
+        if let Err(e) = parser.set_language(&language) {
+            return RawResult {
+                status: CheckStatus::Failed,
+                message: format!("Failed to set language in parser: {e}"),
+                details: None,
+            };
+        }
+        let parsed_tree = match parser.parse(&content, None) {
+            Some(t) => t,
+            None => return RawResult {
+                status: CheckStatus::Failed,
+                message: format!("Failed to parse file '{path}' into AST"),
+                details: None,
+            }
+        };
+        ast_cache.insert(path.to_string(), parsed_tree.clone());
+        parsed_tree
+    };
+
+    // 5. Execute Query
+    let mut cursor = tree_sitter::QueryCursor::new();
+    let mut match_count = 0;
+    
+    // In newer tree-sitter versions, QueryMatches might not implement Iterator directly
+    // because it yields items referencing the cursor. We use its inherent .next() method.
+    let mut matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
+    while matches.next().is_some() {
+        match_count += 1;
+    }
+    
+    let has_matches = match_count > 0;
+
+    // 6. Evaluate Result based on Mode
+    let passed = match mode {
+        QueryMode::Required => has_matches,
+        QueryMode::Forbidden => !has_matches,
+    };
+
+    let mut details = format!("Query:\n{expanded_query}\n");
+    if has_matches {
+        details.push_str(&format!("\nFound {} match(es) in '{path}'", match_count));
+    } else {
+        details.push_str(&format!("\nNo matches found in '{path}'"));
+    }
+
+    RawResult {
+        status: if passed { CheckStatus::Passed } else { CheckStatus::Failed },
+        message: if passed {
+            format!("AstQuery passed for {path} (mode: {:?})", mode)
+        } else {
+            format!("AstQuery failed for {path} (mode: {:?})", mode)
+        },
+        details: Some(details),
+    }
+}
+
+fn expand_ast_macro(macro_str: &str, language: &str) -> Result<String, String> {
+    let parts: Vec<&str> = macro_str.split(':').collect();
+    if parts.len() < 2 {
+        return Err("Invalid macro format. Expected macro:<name>[:<args>]".into());
+    }
+
+    let macro_name = parts[1];
+    let args = &parts[2..];
+
+    match (language.to_lowercase().as_str(), macro_name) {
+        ("python", "function_exists") => {
+            if args.is_empty() {
+                return Err("function_exists requires a function name argument".into());
+            }
+            let fn_name = args[0];
+            Ok(format!("(function_definition name: (identifier) @name (#eq? @name \"{fn_name}\"))"))
+        },
+        ("python", "class_exists") => {
+            if args.is_empty() {
+                return Err("class_exists requires a class name argument".into());
+            }
+            let class_name = args[0];
+            Ok(format!("(class_definition name: (identifier) @name (#eq? @name \"{class_name}\"))"))
+        },
+        ("python", "imports_module") => {
+            if args.is_empty() {
+                return Err("imports_module requires a module name argument".into());
+            }
+            let module_name = args[0];
+            Ok(format!(
+                "(import_statement name: (dotted_name (identifier) @name (#eq? @name \"{module_name}\")))"
+            ))
+        },
+        _ => Err(format!("Unknown macro '{macro_name}' for language '{language}'")),
+    }
+}
+
 // ── Python-Specific Check Implementations ───────────────────
 
 async fn check_python_types(
@@ -901,6 +1063,7 @@ async fn check_python_import_graph(
     root_path: &str,
     fail_on_circular: bool,
     working_dir: Option<&str>,
+    enforced_architecture: Option<&[ArchitectureRule]>,
 ) -> RawResult {
     // Python script that detects circular imports by analyzing import statements
     let python_script = format!(
@@ -993,6 +1156,7 @@ result = {{
     "total_edges": sum(len(v) for v in graph.values()),
     "cycles": [" → ".join(c) for c in unique_cycles],
     "cycle_count": len(unique_cycles),
+    "edges": graph,
 }}
 print(json.dumps(result))
 "#
@@ -1017,17 +1181,85 @@ print(json.dumps(result))
                         })
                         .unwrap_or_default();
 
-                    let passed = if fail_on_circular {
+                    let mut architecture_violations = Vec::new();
+                    if let Some(rules) = enforced_architecture {
+                        if let Some(edges) = result["edges"].as_object() {
+                            for (source_module, targets_val) in edges {
+                                let targets: Vec<String> = targets_val
+                                    .as_array()
+                                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                                    .unwrap_or_default();
+                                
+                                for rule in rules {
+                                    if let Ok(source_re) = Regex::new(&rule.source_match) {
+                                        if source_re.is_match(source_module) {
+                                            if let Some(allowed) = &rule.allowed_imports {
+                                                let allowed_res: Vec<Regex> = allowed.iter().filter_map(|p| Regex::new(p).ok()).collect();
+                                                for target in &targets {
+                                                    let mut is_allowed = false;
+                                                    for re in &allowed_res {
+                                                        if re.is_match(target) {
+                                                            is_allowed = true;
+                                                            break;
+                                                        }
+                                                    }
+                                                    if !is_allowed {
+                                                        architecture_violations.push(format!(
+                                                            "[{source_module}] imported [{target}] (not in allow-list for '{}')",
+                                                            rule.source_match
+                                                        ));
+                                                    }
+                                                }
+                                            }
+                                            if let Some(forbidden) = &rule.forbidden_imports {
+                                                let forbidden_res: Vec<Regex> = forbidden.iter().filter_map(|p| Regex::new(p).ok()).collect();
+                                                for target in &targets {
+                                                    for re in &forbidden_res {
+                                                        if re.is_match(target) {
+                                                            architecture_violations.push(format!(
+                                                                "[{source_module}] imported [{target}] (forbidden by '{}', matched '{}')",
+                                                                rule.source_match, re.as_str()
+                                                            ));
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Sort violations for deterministic output
+                    architecture_violations.sort();
+
+                    let cycles_passed = if fail_on_circular {
                         cycle_count == 0
                     } else {
                         true // just report
                     };
+                    
+                    let architecture_passed = architecture_violations.is_empty();
+                    let passed = cycles_passed && architecture_passed;
 
                     let mut details = format!(
                         "Import graph: {total_modules} modules, {total_edges} import edges\n"
                     );
+                    
+                    if !architecture_violations.is_empty() {
+                        details.push_str(&format!("\nArchitecture Violations ({}):\n", architecture_violations.len()));
+                        for (i, violation) in architecture_violations.iter().enumerate() {
+                            if i >= 30 {
+                                details.push_str(&format!("  ... and {} more\n", architecture_violations.len() - 30));
+                                break;
+                            }
+                            details.push_str(&format!("  - {violation}\n"));
+                        }
+                    }
+
                     if cycles.is_empty() {
-                        details.push_str("No circular imports detected.\n");
+                        details.push_str("\nNo circular imports detected.\n");
                     } else {
                         details.push_str(&format!("\nCircular imports ({cycle_count}):\n"));
                         for (i, cycle) in cycles.iter().enumerate() {
@@ -1047,21 +1279,25 @@ print(json.dumps(result))
                             ));
                         }
                     }
+                    
+                    let mut err_msgs = Vec::new();
+                    if !cycles_passed {
+                        err_msgs.push(format!("{cycle_count} circular import(s)"));
+                    }
+                    if !architecture_passed {
+                        err_msgs.push(format!("{} architecture violation(s)", architecture_violations.len()));
+                    }
 
                     RawResult {
                         status: if passed { CheckStatus::Passed } else { CheckStatus::Failed },
-                        message: if cycle_count == 0 {
-                            format!(
-                                "No circular imports in {root_path} ({total_modules} modules scanned)"
-                            )
-                        } else if passed {
-                            format!(
-                                "{cycle_count} circular import(s) found in {root_path} (reporting only)"
-                            )
+                        message: if passed {
+                            let mut ok_msg = format!("Import structure OK in {root_path} ({total_modules} modules scanned)");
+                            if cycle_count > 0 && !fail_on_circular {
+                                ok_msg.push_str(&format!(" [{} circular imports reported only]", cycle_count));
+                            }
+                            ok_msg
                         } else {
-                            format!(
-                                "{cycle_count} circular import(s) found in {root_path}"
-                            )
+                            format!("Import issues in {root_path}: {}", err_msgs.join(", "))
                         },
                         details: Some(details),
                     }

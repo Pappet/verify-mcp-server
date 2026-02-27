@@ -82,18 +82,33 @@ pub enum CheckType {
         path: String,
     },
 
-    /// Check that a file contains required patterns.
+    /// **LEGACY**: Check that a file contains required patterns.
+    /// For source code, prefer `AstQuery`.
     FileContainsPatterns {
         path: String,
         /// Regex patterns that must all be found.
         required_patterns: Vec<String>,
     },
 
-    /// Check that a file does NOT contain forbidden patterns.
+    /// **LEGACY**: Check that a file does NOT contain forbidden patterns.
+    /// For source code, prefer `AstQuery`.
     FileExcludesPatterns {
         path: String,
         /// Regex patterns that must NOT be found.
         forbidden_patterns: Vec<String>,
+    },
+
+    /// AST-based semantic query using Tree-sitter.
+    AstQuery {
+        /// File to parse.
+        path: String,
+        /// Language of the file (e.g., "python").
+        language: String,
+        /// The query to execute. Can be a macro like `macro:function_exists:name` or raw S-expression.
+        query: String,
+        /// Query mode: "required" (must match) or "forbidden" (must not match). Default is "required".
+        #[serde(default = "default_query_mode")]
+        mode: QueryMode,
     },
 
     /// Validate JSON string against a JSON Schema.
@@ -160,7 +175,7 @@ pub enum CheckType {
         timeout_secs: u64,
     },
 
-    /// Detect circular imports in Python modules.
+    /// Detect circular imports in Python modules and optionally enforce architecture rules.
     PythonImportGraph {
         /// Root module/package to analyze (e.g. "ecs" or "services").
         root_path: String,
@@ -169,6 +184,9 @@ pub enum CheckType {
         fail_on_circular: bool,
         #[serde(default)]
         working_dir: Option<String>,
+        /// Optional architecture rules.
+        #[serde(default)]
+        enforced_architecture: Option<Vec<ArchitectureRule>>,
     },
 
     /// Check that all IDs referenced in a JSON data file exist
@@ -202,6 +220,33 @@ fn default_type_check_timeout() -> u64 {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_query_mode() -> QueryMode {
+    QueryMode::Required
+}
+
+/// Modes for generic AST queries.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum QueryMode {
+    /// The query must find matches in the source file.
+    Required,
+    /// The query must NOT find matches in the source file.
+    Forbidden,
+}
+
+/// Defines import constraints for modules.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArchitectureRule {
+    /// The module doing the importing (regex pattern, e.g. "^ecs\\.systems\\.").
+    pub source_match: String,
+    /// Modules the source is allowed to import (regex patterns). If None, no allow-list is enforced.
+    #[serde(default)]
+    pub allowed_imports: Option<Vec<String>>,
+    /// Modules the source is explicitly forbidden to import (regex patterns).
+    #[serde(default)]
+    pub forbidden_imports: Option<Vec<String>>,
 }
 
 /// How severe a check failure is.

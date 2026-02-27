@@ -17,3 +17,5 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
+tree-sitter = "0.26.6"
+tree-sitter-python = "0.25.0"
