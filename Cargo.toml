@@ -19,3 +19,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 tree-sitter = "0.26.6"
 tree-sitter-python = "0.25.0"
+ignore = "0.4.25"
+sha2 = "0.10.9"

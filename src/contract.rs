@@ -26,6 +26,12 @@ pub struct Contract {
     /// Results of individual checks after verification.
     #[serde(default)]
     pub results: Vec<CheckResult>,
+    /// Hash of the workspace when the contract was last successfully verified.
+    pub workspace_hash: Option<String>,
+    /// Identifier for the agent that created the contract.
+    pub agent_id: String,
+    /// The primary language/technology stack of the task.
+    pub language: String,
 }
 
 /// A single verifiable check within a contract.
@@ -310,7 +316,10 @@ pub struct ContractSummary {
     pub id: String,
     pub description: String,
     pub task: String,
+    pub agent_id: String,
+    pub language: String,
     pub status: ContractStatus,
     pub num_checks: usize,
     pub created_at: DateTime<Utc>,
+    pub workspace_hash: Option<String>,
 }

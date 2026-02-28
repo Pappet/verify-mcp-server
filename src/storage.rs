@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 // ── Database Path ───────────────────────────────────────────────────
 
@@ -65,7 +65,7 @@ impl AuditEventType {
 pub struct AuditEvent {
     pub id: i64,
     pub contract_id: String,
-    pub event_type: String,
+    pub event_type: AuditEventType,
     pub details: Option<String>,
     pub created_at: String,
 }
@@ -98,6 +98,13 @@ pub struct VerificationStats {
     pub most_common_failures: Vec<FailureFrequency>,
     pub avg_verification_duration_ms: u64,
     pub period_days: i64,
+    pub agents: Vec<AgentStats>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AgentStats {
+    pub id: String,
+    pub trust_score: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -143,14 +150,22 @@ impl Storage {
 
         conn.execute_batch(
             "
+            CREATE TABLE IF NOT EXISTS agents (
+                id              TEXT PRIMARY KEY,
+                trust_score     REAL NOT NULL DEFAULT 100.0
+            );
+
             CREATE TABLE IF NOT EXISTS contracts (
                 id              TEXT PRIMARY KEY,
                 description     TEXT NOT NULL,
                 task            TEXT NOT NULL,
+                agent_id        TEXT NOT NULL,
+                language        TEXT NOT NULL,
                 checks_json     TEXT NOT NULL,
                 status          TEXT NOT NULL DEFAULT 'pending',
                 created_at      TEXT NOT NULL,
-                updated_at      TEXT NOT NULL
+                updated_at      TEXT NOT NULL,
+                workspace_hash  TEXT
             );
 
             CREATE TABLE IF NOT EXISTS check_results (
@@ -181,6 +196,8 @@ impl Storage {
                 ON audit_events(event_type);
             CREATE INDEX IF NOT EXISTS idx_contracts_status
                 ON contracts(status);
+            CREATE INDEX IF NOT EXISTS idx_contracts_agent
+                ON contracts(agent_id);
             CREATE INDEX IF NOT EXISTS idx_contracts_created
                 ON contracts(created_at);
             ",
@@ -199,6 +216,8 @@ impl Storage {
         id: &str,
         description: &str,
         task: &str,
+        agent_id: &str,
+        language: &str,
         checks: &[Check],
     ) -> Result<(), String> {
         let conn = self.conn.lock().await;
@@ -206,10 +225,18 @@ impl Storage {
         let checks_json =
             serde_json::to_string(checks).map_err(|e| format!("Serialize checks: {e}"))?;
 
+        // Ensure agent exists
         conn.execute(
-            "INSERT INTO contracts (id, description, task, checks_json, status, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?5)",
-            params![id, description, task, checks_json, now],
+            "INSERT INTO agents (id, trust_score) VALUES (?1, 100.0)
+             ON CONFLICT(id) DO NOTHING",
+            params![agent_id],
+        )
+        .map_err(|e| format!("Insert agent: {e}"))?;
+
+        conn.execute(
+            "INSERT INTO contracts (id, description, task, agent_id, language, checks_json, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, ?7)",
+            params![id, description, task, agent_id, language, checks_json, now],
         )
         .map_err(|e| format!("Insert contract: {e}"))?;
 
@@ -226,24 +253,28 @@ impl Storage {
     fn get_contract_sync(&self, conn: &Connection, id: &str) -> Result<Option<Contract>, String> {
         let mut stmt = conn
             .prepare(
-                "SELECT id, description, task, checks_json, status, created_at
+                "SELECT id, description, task, agent_id, language, checks_json, status, created_at, workspace_hash
                  FROM contracts WHERE id = ?1",
             )
             .map_err(|e| format!("Prepare: {e}"))?;
 
         let contract = stmt
             .query_row(params![id], |row| {
-                let checks_json: String = row.get(3)?;
-                let status_str: String = row.get(4)?;
-                let created_str: String = row.get(5)?;
+                let checks_json: String = row.get(5)?;
+                let status_str: String = row.get(6)?;
+                let created_str: String = row.get(7)?;
+                let workspace_hash: Option<String> = row.get(8)?;
 
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
                     checks_json,
                     status_str,
                     created_str,
+                    workspace_hash,
                 ))
             })
             .optional()
@@ -251,13 +282,14 @@ impl Storage {
 
         match contract {
             None => Ok(None),
-            Some((id, description, task, checks_json, status_str, created_str)) => {
+            Some((id, description, task, agent_id, language, checks_json, status_str, created_str, workspace_hash)) => {
                 let checks: Vec<Check> = serde_json::from_str(&checks_json)
                     .map_err(|e| format!("Deserialize checks: {e}"))?;
                 let status = match status_str.as_str() {
                     "passed" => ContractStatus::Passed,
                     "failed" => ContractStatus::Failed,
                     "running" => ContractStatus::Running,
+                    "review_required" => ContractStatus::ReviewRequired,
                     _ => ContractStatus::Pending,
                 };
                 let created_at = DateTime::parse_from_rfc3339(&created_str)
@@ -271,10 +303,13 @@ impl Storage {
                     id,
                     description,
                     task,
+                    agent_id,
+                    language,
                     checks,
                     created_at,
                     status,
                     results,
+                    workspace_hash,
                 }))
             }
         }
@@ -286,16 +321,82 @@ impl Storage {
         id: &str,
         status: ContractStatus,
         results: &[CheckResult],
+        new_workspace_hash: Option<String>,
     ) -> Result<(), String> {
         let conn = self.conn.lock().await;
+
+        // Fetch old contract state to check for penalties
+        let old_contract = self.get_contract_sync(&conn, id)?;
+        if let Some(old) = &old_contract {
+            let flaky_penalty = std::env::var("VERIFY_TRUST_PENALTY_FLAKY")
+                .ok()
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(-5.0);
+            let trial_penalty = std::env::var("VERIFY_TRUST_PENALTY_TRIAL")
+                .ok()
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(-1.0);
+            let max_retries = std::env::var("VERIFY_TRUST_MAX_RETRIES")
+                .ok()
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(3);
+
+            if status == ContractStatus::Failed {
+                if old.status == ContractStatus::Passed && old.workspace_hash == new_workspace_hash {
+                    // Flaky / Fake test detected - severe penalty
+                    conn.execute(
+                        "UPDATE agents SET trust_score = trust_score + ?1 WHERE id = ?2",
+                        params![flaky_penalty, old.agent_id],
+                    ).map_err(|e| format!("Update agent score: {e}"))?;
+                } else {
+                    // Check for consecutive failures
+                    let mut stmt = conn.prepare(
+                        "SELECT event_type FROM audit_events WHERE contract_id = ?1 ORDER BY created_at DESC LIMIT ?2"
+                    ).map_err(|e| format!("Prepare consecutive check: {e}"))?;
+                    
+                    let rows = stmt.query_map(params![id, max_retries], |row| row.get::<_, String>(0))
+                        .map_err(|e| format!("Query consecutive: {e}"))?;
+                        
+                    let mut recent_failures = 0;
+                    for row in rows {
+                        if let Ok(evt) = row {
+                            if evt == "verification_failed" || evt == "verification_started" {
+                                if evt == "verification_failed" {
+                                    recent_failures += 1;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+
+                    if recent_failures >= max_retries as usize {
+                        // Trial and error detected
+                        conn.execute(
+                            "UPDATE agents SET trust_score = trust_score + ?1 WHERE id = ?2",
+                            params![trial_penalty, old.agent_id],
+                        ).map_err(|e| format!("Update agent score: {e}"))?;
+                    }
+                }
+            }
+        }
+
         let now = Utc::now().to_rfc3339();
         let status_str = status_to_str(&status);
 
-        conn.execute(
-            "UPDATE contracts SET status = ?1, updated_at = ?2 WHERE id = ?3",
-            params![status_str, now, id],
-        )
-        .map_err(|e| format!("Update status: {e}"))?;
+        if status == ContractStatus::Passed {
+            conn.execute(
+                "UPDATE contracts SET status = ?1, updated_at = ?2, workspace_hash = ?3 WHERE id = ?4",
+                params![status_str, now, new_workspace_hash, id],
+            )
+            .map_err(|e| format!("Update status with hash: {e}"))?;
+        } else {
+            conn.execute(
+                "UPDATE contracts SET status = ?1, updated_at = ?2 WHERE id = ?3",
+                params![status_str, now, id],
+            )
+            .map_err(|e| format!("Update status: {e}"))?;
+        }
 
         // Delete old results for this contract (re-runs overwrite)
         conn.execute(
@@ -362,29 +463,33 @@ impl Storage {
         let conn = self.conn.lock().await;
         let mut stmt = conn
             .prepare(
-                "SELECT id, description, task, status, checks_json, created_at
+                "SELECT id, description, task, agent_id, language, status, checks_json, created_at, workspace_hash
                  FROM contracts ORDER BY created_at DESC",
             )
             .map_err(|e| format!("Prepare list: {e}"))?;
 
         let rows = stmt
             .query_map([], |row| {
-                let checks_json: String = row.get(4)?;
-                let created_str: String = row.get(5)?;
+                let checks_json: String = row.get(6)?;
+                let created_str: String = row.get(7)?;
+                let workspace_hash: Option<String> = row.get(8)?;
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
                     checks_json,
                     created_str,
+                    workspace_hash,
                 ))
             })
             .map_err(|e| format!("Query list: {e}"))?;
 
         let mut summaries = Vec::new();
         for row in rows {
-            let (id, description, task, status_str, checks_json, created_str) =
+            let (id, description, task, agent_id, language, status_str, checks_json, created_str, workspace_hash) =
                 row.map_err(|e| format!("Row error: {e}"))?;
             let checks: Vec<Check> =
                 serde_json::from_str(&checks_json).unwrap_or_default();
@@ -397,9 +502,12 @@ impl Storage {
                 id,
                 description,
                 task,
+                agent_id,
+                language,
                 status,
                 num_checks: checks.len(),
                 created_at,
+                workspace_hash,
             });
         }
         Ok(summaries)
@@ -591,6 +699,21 @@ impl Storage {
             .filter_map(|r| r.ok())
             .collect();
 
+        // Agent stats
+        let mut stmt = conn
+            .prepare("SELECT id, trust_score FROM agents ORDER BY trust_score DESC")
+            .map_err(|e| format!("Prepare agents: {e}"))?;
+        let agent_rows = stmt
+            .query_map([], |row| {
+                Ok(AgentStats {
+                    id: row.get(0)?,
+                    trust_score: row.get(1)?,
+                })
+            })
+            .map_err(|e| format!("Query agents: {e}"))?;
+            
+        let agents: Vec<AgentStats> = agent_rows.filter_map(|r| r.ok()).collect();
+
         Ok(VerificationStats {
             total_contracts,
             total_passed,
@@ -602,6 +725,7 @@ impl Storage {
             most_common_failures,
             avg_verification_duration_ms: avg_duration as u64,
             period_days: period,
+            agents,
         })
     }
 
@@ -640,10 +764,11 @@ impl Storage {
 
         let rows = stmt
             .query_map(params_ref.as_slice(), |row| {
+                let event_type_str: String = row.get(2)?;
                 Ok(AuditEvent {
                     id: row.get(0)?,
                     contract_id: row.get(1)?,
-                    event_type: row.get(2)?,
+                    event_type: AuditEventType::from_str(&event_type_str),
                     details: row.get(3)?,
                     created_at: row.get(4)?,
                 })

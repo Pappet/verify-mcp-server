@@ -84,9 +84,14 @@ Execute the work and verify using `verify_run_contract`. You'll receive a detail
     "failed": 0,
     "unverified": 0,
     "warnings": 0
-  }
 }
 ```
+
+### 4. Debugging & Audit Trails
+
+If an agent or a review process gets stuck, you can pull up the history and audit trails:
+- Use `verify_history` to browse past operations.
+- Use `verify_get_audit_trail` with a specific `contract_id` to trace the exact lifecycle of a task and identify how often an agent failed before succeeding.
 
 ## Security & Sandboxing
 

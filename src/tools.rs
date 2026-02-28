@@ -17,7 +17,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
                 .into(),
             input_schema: json!({
                 "type": "object",
-                "required": ["description", "task", "checks"],
+                "required": ["description", "task", "checks", "agent_id", "language"],
                 "properties": {
                     "description": {
                         "type": "string",
@@ -26,6 +26,14 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
                     "task": {
                         "type": "string",
                         "description": "The task the agent is about to perform"
+                    },
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Unique identifier for the agent creating the contract (mandatory)"
+                    },
+                    "language": {
+                        "type": "string",
+                        "description": "Primary programming language or tech stack for this task (e.g. 'python', 'rust', 'js')"
                     },
                     "checks": {
                         "type": "array",
@@ -224,6 +232,31 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
                 idempotent_hint: Some(true),
             }),
         },
+        ToolDefinition {
+            name: "verify_get_audit_trail".into(),
+            description: "Get the exact lifecycle (audit trail) of a contract. \
+                Useful to track how often an agent failed a specific contract before passing."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "contract_id": {
+                        "type": "string",
+                        "description": "Optional contract ID to filter the audit trail"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max entries to return (default: 50)",
+                        "default": 50
+                    }
+                }
+            }),
+            annotations: Some(ToolAnnotations {
+                read_only_hint: Some(true),
+                destructive_hint: Some(false),
+                idempotent_hint: Some(true),
+            }),
+        },
     ]
 }
 
@@ -242,6 +275,7 @@ pub async fn handle_tool_call(
         "verify_delete_contract" => handle_delete_contract(args, store).await,
         "verify_history" => handle_history(args, store).await,
         "verify_stats" => handle_stats(args, store).await,
+        "verify_get_audit_trail" => handle_get_audit_trail(args, store).await,
         _ => ToolResult::error(format!("Unknown tool: {name}")),
     }
 }
@@ -259,6 +293,14 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
         .and_then(|v| v.as_str())
         .unwrap_or("Unspecified task")
         .to_string();
+    let agent_id = match args.get("agent_id").and_then(|v| v.as_str()) {
+        Some(v) => v.to_string(),
+        None => return ToolResult::error("'agent_id' is mandatory for creating a contract"),
+    };
+    let language = match args.get("language").and_then(|v| v.as_str()) {
+        Some(v) => v.to_string(),
+        None => return ToolResult::error("'language' is mandatory for context-aware validation"),
+    };
 
     let checks_value = match args.get("checks").and_then(|v| v.as_array()) {
         Some(c) => c,
@@ -287,8 +329,42 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
         }
     }
 
+    // --- Meta-Validation: Enforce Language-Specific Rules ---
+    let lower_lang = language.to_lowercase();
+    let mut err_msg = None;
+
+    if lower_lang.contains("python") {
+        let has_type_check = checks.iter().any(|c| matches!(c.check_type, CheckType::PythonTypeCheck { .. }));
+        let has_tests = checks.iter().any(|c| matches!(c.check_type, CheckType::PytestResult { .. }));
+        if !has_type_check || !has_tests {
+            err_msg = Some("Python tasks must include both a 'python_type_check' AND a 'pytest_result' check.");
+        }
+    } else if lower_lang.contains("rust") {
+        let has_cargo_test = checks.iter().any(|c| {
+            if let CheckType::CommandSucceeds { command, .. } = &c.check_type {
+                command.contains("cargo test")
+            } else { false }
+        });
+        if !has_cargo_test {
+            err_msg = Some("Rust tasks must include a 'command_succeeds' check running 'cargo test'.");
+        }
+    } else if lower_lang.contains("js") || lower_lang.contains("typescript") || lower_lang.contains("html") || lower_lang.contains("css") {
+        let has_tests = checks.iter().any(|c| {
+            if let CheckType::CommandSucceeds { command, .. } = &c.check_type {
+                command.contains("test")
+            } else { false }
+        });
+        if !has_tests {
+            err_msg = Some("JS/TS/Web tasks must include a 'command_succeeds' check for testing (e.g., 'npm test' or 'jest').");
+        }
+    }
+
+    if let Some(msg) = err_msg {
+        return ToolResult::error(format!("Meta-Validation Failed: {msg}"));
+    }
+
     let id = uuid::Uuid::new_v4().to_string();
-    if let Err(e) = store.create_contract(&id, &description, &task, &checks).await {
+    if let Err(e) = store.create_contract(&id, &description, &task, &agent_id, &language, &checks).await {
         return ToolResult::error(format!("Failed to store contract: {e}"));
     }
 
@@ -326,8 +402,9 @@ async fn handle_run_contract(args: &Value, store: &Storage) -> ToolResult {
 
     let results = verification::run_contract(&contract, input).await;
     let status = verification::determine_status(&results);
+    let new_workspace_hash = verification::compute_workspace_hash(".");
 
-    if let Err(e) = store.update_results(contract_id, status.clone(), &results).await {
+    if let Err(e) = store.update_results(contract_id, status.clone(), &results, Some(new_workspace_hash)).await {
         return ToolResult::error(format!("Failed to store results: {e}"));
     }
 
@@ -405,10 +482,13 @@ async fn handle_quick_check(args: &Value) -> ToolResult {
         id: "quick-check".into(),
         description: "Ad-hoc quick check".into(),
         task: "Quick verification".into(),
+        agent_id: "quick-check-agent".into(),
+        language: "unknown".into(),
         checks: vec![check],
         created_at: chrono::Utc::now(),
         status: ContractStatus::Running,
         results: vec![],
+        workspace_hash: None,
     };
 
     let results = verification::run_contract(&contract, input).await;
@@ -584,6 +664,19 @@ async fn handle_stats(args: &Value, store: &Storage) -> ToolResult {
         stats.avg_verification_duration_ms,
     );
 
+    if !stats.agents.is_empty() {
+        summary.push_str("\nAgent Trust Scores:\n");
+        for agent in &stats.agents {
+            let status = if agent.trust_score >= 100.0 { "✓" } else if agent.trust_score > 50.0 { "⚠" } else { "✗" };
+            summary.push_str(&format!(
+                "  {} {} ({:.1})\n",
+                status,
+                agent.id,
+                agent.trust_score
+            ));
+        }
+    }
+
     if !stats.most_common_failures.is_empty() {
         summary.push_str("\nMost frequently failing checks:\n");
         for (i, f) in stats.most_common_failures.iter().enumerate() {
@@ -600,5 +693,38 @@ async fn handle_stats(args: &Value, store: &Storage) -> ToolResult {
     ToolResult::json(&json!({
         "stats": stats,
         "summary": summary,
+    }))
+}
+
+async fn handle_get_audit_trail(args: &Value, store: &Storage) -> ToolResult {
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(50) as usize;
+    let contract_id = args.get("contract_id").and_then(|v| v.as_str());
+
+    let events = match store.get_audit_events(contract_id, limit).await {
+        Ok(e) => e,
+        Err(e) => return ToolResult::error(format!("Database error: {e}")),
+    };
+
+    if events.is_empty() {
+        let filter_desc = if let Some(cid) = contract_id {
+            format!(" for contract_id '{}'", cid)
+        } else {
+            String::new()
+        };
+        return ToolResult::text(format!(
+            "No audit events found{filter_desc}."
+        ));
+    }
+
+    ToolResult::json(&json!({
+        "audit_events": events,
+        "total_shown": events.len(),
+        "filters": {
+            "contract_id": contract_id,
+            "limit": limit,
+        }
     }))
 }
