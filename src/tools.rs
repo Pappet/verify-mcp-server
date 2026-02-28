@@ -320,15 +320,7 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
         match serde_json::from_value::<Check>(check_val.clone()) {
             Ok(check) => checks.push(check),
             Err(e) => {
-                let error_msg = format!(
-                    "Invalid check at index {i}: {e}. \
-                     Ensure check_type has a 'type' field with one of: \
-                     command_succeeds, command_output_matches, file_exists, \
-                     file_contains_patterns, file_excludes_patterns, \
-                     json_schema_valid, value_in_range, diff_size_limit, assertion, \
-                     python_type_check, pytest_result, python_import_graph, \
-                     json_registry_consistency"
-                );
+                let error_msg = check_type_error_hint(i, check_val, &e);
                 // Store the rejected contract for audit
                 let rejected_id = uuid::Uuid::new_v4().to_string();
                 if let Err(store_err) = store
@@ -510,7 +502,7 @@ async fn handle_quick_check(args: &Value) -> ToolResult {
 
     let check: Check = match serde_json::from_value(check_val.clone()) {
         Ok(c) => c,
-        Err(e) => return ToolResult::error(format!("Invalid check definition: {e}")),
+        Err(e) => return ToolResult::error(check_type_error_hint(0, check_val, &e)),
     };
 
     let input = args.get("input").and_then(|v| v.as_str());
@@ -765,4 +757,198 @@ async fn handle_get_audit_trail(args: &Value, store: &Storage) -> ToolResult {
             "limit": limit,
         }
     }))
+}
+
+// ── Error Hint System ───────────────────────────────────────────────
+
+/// Generate a targeted error message when a check fails to deserialize.
+/// Instead of dumping all 13 check types, identifies what type the agent intended
+/// and shows exactly which fields are missing plus a copy-paste example.
+fn check_type_error_hint(index: usize, check_val: &Value, serde_err: &serde_json::Error) -> String {
+    let check_type_obj = check_val.get("check_type");
+    let type_name = check_type_obj
+        .and_then(|ct| ct.get("type"))
+        .and_then(|t| t.as_str());
+    let check_name = check_val
+        .get("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or("?");
+
+    let serde_msg = serde_err.to_string();
+
+    match type_name {
+        Some(t) => {
+            let schema = check_type_schema(t);
+            match schema {
+                Some(s) => format!(
+                    "Invalid check at index {index} ('{check_name}'): {serde_msg}\n\n\
+                     ╭─ Required fields for '{t}' ─────────────────────\n\
+                     {}\n\
+                     ├─ Optional fields ────────────────────────────────\n\
+                     {}\n\
+                     ╰─ Example ────────────────────────────────────────\n\
+                     {}",
+                    s.required,
+                    s.optional,
+                    s.example,
+                ),
+                None => format!(
+                    "Invalid check at index {index} ('{check_name}'): unknown check type '{t}'.\n\n\
+                     Valid types:\n\
+                     │ command_succeeds        │ command_output_matches │ file_exists\n\
+                     │ file_contains_patterns  │ file_excludes_patterns │ ast_query\n\
+                     │ json_schema_valid       │ value_in_range         │ diff_size_limit\n\
+                     │ assertion               │ python_type_check      │ pytest_result\n\
+                     │ python_import_graph     │ json_registry_consistency"
+                ),
+            }
+        }
+        None => {
+            // No 'type' field — diagnose the structural issue
+            let has_type_at_root = check_val.get("type").is_some();
+            let has_check_type = check_val.get("check_type").is_some();
+
+            if has_type_at_root && !has_check_type {
+                format!(
+                    "Invalid check at index {index} ('{check_name}'): \
+                     'type' field found at root level, but it must be inside 'check_type'.\n\n\
+                     ✗ Wrong:  {{\"name\": \"...\", \"type\": \"command_succeeds\", \"command\": \"...\"}}\n\
+                     ✓ Right:  {{\"name\": \"...\", \"check_type\": {{\"type\": \"command_succeeds\", \"command\": \"...\"}}}}"
+                )
+            } else if has_check_type {
+                format!(
+                    "Invalid check at index {index} ('{check_name}'): \
+                     missing 'type' field inside 'check_type'.\n\n\
+                     Error: {serde_msg}\n\n\
+                     Your check_type: {}\n\n\
+                     Expected: {{\"type\": \"<check_type_name>\", ...fields...}}",
+                    serde_json::to_string_pretty(check_type_obj.unwrap()).unwrap_or_default()
+                )
+            } else {
+                format!(
+                    "Invalid check at index {index} ('{check_name}'): \
+                     missing 'check_type' object.\n\n\
+                     Error: {serde_msg}\n\n\
+                     Expected structure:\n\
+                     {{\n  \
+                       \"name\": \"my_check\",\n  \
+                       \"check_type\": {{\n    \
+                         \"type\": \"command_succeeds\",\n    \
+                         \"command\": \"cargo test\",\n    \
+                         \"working_dir\": \".\"\n  \
+                       }}\n\
+                     }}"
+                )
+            }
+        }
+    }
+}
+
+struct CheckTypeSchema {
+    required: &'static str,
+    optional: &'static str,
+    example: &'static str,
+}
+
+fn check_type_schema(type_name: &str) -> Option<CheckTypeSchema> {
+    match type_name {
+        "command_succeeds" => Some(CheckTypeSchema {
+            required: "│  command: string  — the shell command to run",
+            optional: "│  working_dir: string   (default: current dir)\n\
+                       │  timeout_secs: integer  (default: 30)\n\
+                       │  sandbox: boolean       (force container execution)",
+            example: r#"{"type": "command_succeeds", "command": "cargo test", "working_dir": "."}"#,
+        }),
+        "command_output_matches" => Some(CheckTypeSchema {
+            required: "│  command: string  — the shell command to run\n\
+                       │  pattern: string  — regex that stdout must match",
+            optional: "│  working_dir: string   (default: current dir)\n\
+                       │  timeout_secs: integer  (default: 30)\n\
+                       │  sandbox: boolean       (force container execution)",
+            example: r#"{"type": "command_output_matches", "command": "python --version", "pattern": "3\\.\\d+"}"#,
+        }),
+        "file_exists" => Some(CheckTypeSchema {
+            required: "│  path: string  — absolute or relative file path",
+            optional: "│  (none)",
+            example: r#"{"type": "file_exists", "path": "src/main.rs"}"#,
+        }),
+        "file_contains_patterns" => Some(CheckTypeSchema {
+            required: "│  path: string                    — file to check\n\
+                       │  required_patterns: [string, ...]  — regex patterns that must ALL match",
+            optional: "│  (none)",
+            example: r#"{"type": "file_contains_patterns", "path": "src/lib.rs", "required_patterns": ["pub fn main", "use std"]}"#,
+        }),
+        "file_excludes_patterns" => Some(CheckTypeSchema {
+            required: "│  path: string                     — file to check\n\
+                       │  forbidden_patterns: [string, ...]  — regex patterns that must NOT match",
+            optional: "│  (none)",
+            example: r#"{"type": "file_excludes_patterns", "path": "src/lib.rs", "forbidden_patterns": ["println!", "dbg!"]}"#,
+        }),
+        "ast_query" => Some(CheckTypeSchema {
+            required: "│  path: string      — file to parse\n\
+                       │  language: string   — e.g. \"python\"\n\
+                       │  query: string      — tree-sitter query or macro (e.g. \"macro:function_exists:main\")",
+            optional: "│  mode: \"required\" (default) or \"forbidden\"",
+            example: r#"{"type": "ast_query", "language": "python", "path": "src/app.py", "query": "macro:function_exists:main"}"#,
+        }),
+        "json_schema_valid" => Some(CheckTypeSchema {
+            required: "│  schema: string  — JSON Schema as a string\n\
+                       │  ⚠ Also pass 'input' (the JSON to validate) when calling verify_run_contract",
+            optional: "│  (none)",
+            example: r#"{"type": "json_schema_valid", "schema": "{\"type\": \"object\", \"required\": [\"id\"]}"}"#,
+        }),
+        "value_in_range" => Some(CheckTypeSchema {
+            required: "│  ⚠ Pass 'input' (a numeric string) when calling verify_run_contract",
+            optional: "│  min: number\n\
+                       │  max: number",
+            example: r#"{"type": "value_in_range", "min": 0.0, "max": 100.0}"#,
+        }),
+        "diff_size_limit" => Some(CheckTypeSchema {
+            required: "│  ⚠ Pass 'input' (unified diff text) when calling verify_run_contract",
+            optional: "│  max_additions: integer\n\
+                       │  max_deletions: integer",
+            example: r#"{"type": "diff_size_limit", "max_additions": 200, "max_deletions": 50}"#,
+        }),
+        "assertion" => Some(CheckTypeSchema {
+            required: "│  claim: string  — what you're asserting\n\
+                       │  ⚠ Pass 'input' (evidence) when calling verify_run_contract\n\
+                       │  ⚠ Results in 'unverified' status — cannot auto-pass a contract",
+            optional: "│  (none)",
+            example: r#"{"type": "assertion", "claim": "UI looks correct after changes"}"#,
+        }),
+        "python_type_check" => Some(CheckTypeSchema {
+            required: "│  paths: [string, ...]  — files or directories to check\n\
+                       │                          e.g. [\"src/\", \"lib/app.py\"]",
+            optional: "│  checker: \"mypy\" (default) or \"pyright\"\n\
+                       │  extra_args: [string, ...]  e.g. [\"--ignore-missing-imports\"]\n\
+                       │  working_dir: string\n\
+                       │  timeout_secs: integer  (default: 120)",
+            example: r#"{"type": "python_type_check", "paths": ["src/app.py"], "checker": "mypy", "extra_args": ["--ignore-missing-imports"], "working_dir": "."}"#,
+        }),
+        "pytest_result" => Some(CheckTypeSchema {
+            required: "│  test_path: string  — path + optional pytest args\n\
+                       │                       e.g. \"tests/ -x --tb=short\" or \"tests/test_foo.py -v\"",
+            optional: "│  min_passed: integer     (minimum tests that must pass)\n\
+                       │  max_failures: integer    (default: 0)\n\
+                       │  max_skipped: integer\n\
+                       │  working_dir: string\n\
+                       │  timeout_secs: integer    (default: 120)",
+            example: r#"{"type": "pytest_result", "test_path": "tests/ -x --tb=short", "min_passed": 5, "max_failures": 0, "working_dir": "."}"#,
+        }),
+        "python_import_graph" => Some(CheckTypeSchema {
+            required: "│  root_path: string  — package to scan (e.g. \"ecs\" or \"services\")",
+            optional: "│  fail_on_circular: boolean  (default: true)\n\
+                       │  working_dir: string\n\
+                       │  enforced_architecture: [{source_match, allowed_imports?, forbidden_imports?}, ...]",
+            example: r#"{"type": "python_import_graph", "root_path": "ecs", "fail_on_circular": true, "working_dir": "."}"#,
+        }),
+        "json_registry_consistency" => Some(CheckTypeSchema {
+            required: "│  json_path: string    — path to JSON data file (e.g. \"data/items.json\")\n\
+                       │  id_field: string      — field name to extract IDs from (e.g. \"id\")\n\
+                       │  source_path: string   — Python file that should reference the IDs",
+            optional: "│  reference_pattern: string  — regex with {} placeholder for ID",
+            example: r#"{"type": "json_registry_consistency", "json_path": "assets/data/items.json", "id_field": "id", "source_path": "entities/item_registry.py"}"#,
+        }),
+        _ => None,
+    }
 }
