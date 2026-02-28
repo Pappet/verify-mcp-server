@@ -887,26 +887,27 @@ fn check_type_schema(type_name: &str) -> Option<CheckTypeSchema> {
         }),
         "file_exists" => Some(CheckTypeSchema {
             required: "│  path: string  — absolute or relative file path",
-            optional: "│  (none)",
+            optional: "│  working_dir: string",
             example: r#"{"type": "file_exists", "path": "src/main.rs"}"#,
         }),
         "file_contains_patterns" => Some(CheckTypeSchema {
             required: "│  path: string                    — file to check\n\
                        │  required_patterns: [string, ...]  — regex patterns that must ALL match",
-            optional: "│  (none)",
+            optional: "│  working_dir: string",
             example: r#"{"type": "file_contains_patterns", "path": "src/lib.rs", "required_patterns": ["pub fn main", "use std"]}"#,
         }),
         "file_excludes_patterns" => Some(CheckTypeSchema {
             required: "│  path: string                     — file to check\n\
                        │  forbidden_patterns: [string, ...]  — regex patterns that must NOT match",
-            optional: "│  (none)",
+            optional: "│  working_dir: string",
             example: r#"{"type": "file_excludes_patterns", "path": "src/lib.rs", "forbidden_patterns": ["println!", "dbg!"]}"#,
         }),
         "ast_query" => Some(CheckTypeSchema {
             required: "│  path: string      — file to parse\n\
                        │  language: string   — e.g. \"python\"\n\
                        │  query: string      — tree-sitter query or macro (e.g. \"macro:function_exists:main\")",
-            optional: "│  mode: \"required\" (default) or \"forbidden\"",
+            optional: "│  mode: \"required\" (default) or \"forbidden\"\n\
+                       │  working_dir: string",
             example: r#"{"type": "ast_query", "language": "python", "path": "src/app.py", "query": "macro:function_exists:main"}"#,
         }),
         "json_schema_valid" => Some(CheckTypeSchema {
@@ -964,7 +965,8 @@ fn check_type_schema(type_name: &str) -> Option<CheckTypeSchema> {
             required: "│  json_path: string    — path to JSON data file (e.g. \"data/items.json\")\n\
                        │  id_field: string      — field name to extract IDs from (e.g. \"id\")\n\
                        │  source_path: string   — Python file that should reference the IDs",
-            optional: "│  reference_pattern: string  — regex with {} placeholder for ID",
+            optional: "│  reference_pattern: string  — regex with {} placeholder for ID\n\
+                       │  working_dir: string",
             example: r#"{"type": "json_registry_consistency", "json_path": "assets/data/items.json", "id_field": "id", "source_path": "entities/item_registry.py"}"#,
         }),
         _ => None,

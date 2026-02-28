@@ -97,24 +97,27 @@ async fn run_check(check: &Check, input: Option<&str>, ast_cache: &mut AstCache)
             .await
         }
 
-        CheckType::FileExists { path } => check_file_exists(path),
+        CheckType::FileExists { path, working_dir } => check_file_exists(path, working_dir.as_deref()),
 
         CheckType::FileContainsPatterns {
             path,
             required_patterns,
-        } => check_file_contains_patterns(path, required_patterns),
+            working_dir,
+        } => check_file_contains_patterns(path, required_patterns, working_dir.as_deref()),
 
         CheckType::FileExcludesPatterns {
             path,
             forbidden_patterns,
-        } => check_file_excludes_patterns(path, forbidden_patterns),
+            working_dir,
+        } => check_file_excludes_patterns(path, forbidden_patterns, working_dir.as_deref()),
 
         CheckType::AstQuery {
             path,
             language,
             query,
             mode,
-        } => run_ast_query(path, language, query, mode, ast_cache).await,
+            working_dir,
+        } => run_ast_query(path, language, query, mode, working_dir.as_deref(), ast_cache).await,
 
         CheckType::JsonSchemaValid { schema } => check_json_schema(input, schema),
 
@@ -170,7 +173,8 @@ async fn run_check(check: &Check, input: Option<&str>, ast_cache: &mut AstCache)
             id_field,
             source_path,
             reference_pattern,
-        } => check_json_registry_consistency(json_path, id_field, source_path, reference_pattern.as_deref()),
+            working_dir,
+        } => check_json_registry_consistency(json_path, id_field, source_path, reference_pattern.as_deref(), working_dir.as_deref()),
     }
 }
 
@@ -246,9 +250,10 @@ async fn run_command_output_matches(
     }
 }
 
-fn check_file_exists(path: &str) -> RawResult {
-    let exists = Path::new(path).exists();
-    RawResult {
+fn check_file_exists(path: &str, working_dir: Option<&str>) -> RawResult {
+    let effective_path = resolve_path(path, working_dir);
+    let exists = effective_path.exists();
+    let mut result = RawResult {
         status: if exists { CheckStatus::Passed } else { CheckStatus::Failed },
         message: if exists {
             format!("File exists: {path}")
@@ -256,18 +261,23 @@ fn check_file_exists(path: &str) -> RawResult {
             format!("File NOT found: {path}")
         },
         details: None,
-    }
+    };
+    add_working_dir_hint_if_needed(&mut result, path, working_dir);
+    result
 }
 
-fn check_file_contains_patterns(path: &str, patterns: &[String]) -> RawResult {
-    let content = match std::fs::read_to_string(path) {
+fn check_file_contains_patterns(path: &str, patterns: &[String], working_dir: Option<&str>) -> RawResult {
+    let effective_path = resolve_path(path, working_dir);
+    let content = match std::fs::read_to_string(&effective_path) {
         Ok(c) => c,
         Err(e) => {
-            return RawResult {
+            let mut result = RawResult {
                 status: CheckStatus::Failed,
                 message: format!("Cannot read file '{path}': {e}"),
                 details: None,
-            }
+            };
+            add_working_dir_hint_if_needed(&mut result, path, working_dir);
+            return result;
         }
     };
 
@@ -304,15 +314,18 @@ fn check_file_contains_patterns(path: &str, patterns: &[String]) -> RawResult {
     }
 }
 
-fn check_file_excludes_patterns(path: &str, patterns: &[String]) -> RawResult {
-    let content = match std::fs::read_to_string(path) {
+fn check_file_excludes_patterns(path: &str, patterns: &[String], working_dir: Option<&str>) -> RawResult {
+    let effective_path = resolve_path(path, working_dir);
+    let content = match std::fs::read_to_string(&effective_path) {
         Ok(c) => c,
         Err(e) => {
-            return RawResult {
+            let mut result = RawResult {
                 status: CheckStatus::Failed,
                 message: format!("Cannot read file '{path}': {e}"),
                 details: None,
-            }
+            };
+            add_working_dir_hint_if_needed(&mut result, path, working_dir);
+            return result;
         }
     };
 
@@ -581,6 +594,7 @@ async fn run_ast_query(
     language_str: &str,
     query_str: &str,
     mode: &QueryMode,
+    working_dir: Option<&str>,
     ast_cache: &mut AstCache,
 ) -> RawResult {
     // 1. Resolve Language
@@ -620,12 +634,17 @@ async fn run_ast_query(
     };
 
     // 4. Get File Content & Syntax Tree
-    let content = match std::fs::read_to_string(path) {
+    let effective_path = resolve_path(path, working_dir);
+    let content = match std::fs::read_to_string(&effective_path) {
         Ok(c) => c,
-        Err(e) => return RawResult {
-            status: CheckStatus::Failed,
-            message: format!("Cannot read file '{path}': {e}"),
-            details: None,
+        Err(e) => {
+            let mut result = RawResult {
+                status: CheckStatus::Failed,
+                message: format!("Cannot read file '{path}': {e}"),
+                details: None,
+            };
+            add_working_dir_hint_if_needed(&mut result, path, working_dir);
+            return result;
         }
     };
 
@@ -1322,16 +1341,20 @@ fn check_json_registry_consistency(
     id_field: &str,
     source_path: &str,
     reference_pattern: Option<&str>,
+    working_dir: Option<&str>,
 ) -> RawResult {
+    let effective_json_path = resolve_path(json_path, working_dir);
     // Read and parse JSON
-    let json_content = match std::fs::read_to_string(json_path) {
+    let json_content = match std::fs::read_to_string(&effective_json_path) {
         Ok(c) => c,
         Err(e) => {
-            return RawResult {
+            let mut result = RawResult {
                 status: CheckStatus::Failed,
                 message: format!("Cannot read JSON file '{json_path}': {e}"),
                 details: None,
-            }
+            };
+            add_working_dir_hint_if_needed(&mut result, json_path, working_dir);
+            return result;
         }
     };
 
@@ -1359,14 +1382,17 @@ fn check_json_registry_consistency(
     }
 
     // Read source file
-    let source_content = match std::fs::read_to_string(source_path) {
+    let effective_source_path = resolve_path(source_path, working_dir);
+    let source_content = match std::fs::read_to_string(&effective_source_path) {
         Ok(c) => c,
         Err(e) => {
-            return RawResult {
+            let mut result = RawResult {
                 status: CheckStatus::Failed,
                 message: format!("Cannot read source file '{source_path}': {e}"),
                 details: None,
-            }
+            };
+            add_working_dir_hint_if_needed(&mut result, source_path, working_dir);
+            return result;
         }
     };
 
@@ -1478,6 +1504,29 @@ fn shell_escape(s: &str) -> String {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
+
+fn resolve_path(path: &str, working_dir: Option<&str>) -> std::path::PathBuf {
+    match (working_dir, Path::new(path).is_absolute()) {
+        (Some(wd), false) => Path::new(wd).join(path),
+        _ => Path::new(path).to_path_buf(),
+    }
+}
+
+fn add_working_dir_hint_if_needed(result: &mut RawResult, path: &str, working_dir: Option<&str>) {
+    if working_dir.is_none() && !Path::new(path).is_absolute() && result.status == CheckStatus::Failed {
+        if result.message.contains("No such file") || result.message.contains("NOT found") || result.message.contains("Cannot read file") {
+            let hint = format!("\n\n💡 HINT: The file path '{path}' appears to be relative, but no 'working_dir' \
+was set. The server resolves paths from its own working directory, not your project. \
+Add 'working_dir' to this check to specify the project root:\n\n\
+  \"working_dir\": \"/absolute/path/to/your/project\"");
+            if let Some(details) = &mut result.details {
+                details.push_str(&hint);
+            } else {
+                result.details = Some(hint);
+            }
+        }
+    }
+}
 
 /// Execute a command with security-aware dispatch.
 ///
@@ -1598,4 +1647,33 @@ pub fn compute_workspace_hash(working_dir: &str) -> String {
 
     let result = hasher.finalize();
     format!("{:x}_{}", result, files_hashed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_file_contains_patterns_with_working_dir() {
+        let dir = std::env::temp_dir().join("verify_mcp_test_wd");
+        fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("test_file.txt");
+        fs::write(&file_path, "hello world\nthis is a test").unwrap();
+
+        let wd = dir.to_str().unwrap();
+        let rel_path = "test_file.txt";
+        let patterns = vec!["hello".to_string(), "test".to_string()];
+        
+        // 1. With working_dir
+        let result = check_file_contains_patterns(rel_path, &patterns, Some(wd));
+        assert_eq!(result.status, CheckStatus::Passed);
+
+        // 2. Without working_dir, should fail and have hint
+        let result_no_wd = check_file_contains_patterns(rel_path, &patterns, None);
+        assert_eq!(result_no_wd.status, CheckStatus::Failed);
+        assert!(result_no_wd.details.unwrap().contains("💡 HINT:"));
+        
+        fs::remove_dir_all(dir).unwrap();
+    }
 }

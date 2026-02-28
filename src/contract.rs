@@ -86,6 +86,8 @@ pub enum CheckType {
     /// Check that a file exists.
     FileExists {
         path: String,
+        #[serde(default)]
+        working_dir: Option<String>,
     },
 
     /// **LEGACY**: Check that a file contains required patterns.
@@ -94,6 +96,8 @@ pub enum CheckType {
         path: String,
         /// Regex patterns that must all be found.
         required_patterns: Vec<String>,
+        #[serde(default)]
+        working_dir: Option<String>,
     },
 
     /// **LEGACY**: Check that a file does NOT contain forbidden patterns.
@@ -102,6 +106,8 @@ pub enum CheckType {
         path: String,
         /// Regex patterns that must NOT be found.
         forbidden_patterns: Vec<String>,
+        #[serde(default)]
+        working_dir: Option<String>,
     },
 
     /// AST-based semantic query using Tree-sitter.
@@ -115,6 +121,8 @@ pub enum CheckType {
         /// Query mode: "required" (must match) or "forbidden" (must not match). Default is "required".
         #[serde(default = "default_query_mode")]
         mode: QueryMode,
+        #[serde(default)]
+        working_dir: Option<String>,
     },
 
     /// Validate JSON string against a JSON Schema.
@@ -209,6 +217,8 @@ pub enum CheckType {
         /// Use `{}` as placeholder for the ID. Default: just checks the ID string appears.
         #[serde(default)]
         reference_pattern: Option<String>,
+        #[serde(default)]
+        working_dir: Option<String>,
     },
 }
 
