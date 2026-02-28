@@ -36,6 +36,7 @@ pub enum AuditEventType {
     VerificationPassed,
     VerificationFailed,
     ContractDeleted,
+    ContractRejected,
 }
 
 impl AuditEventType {
@@ -46,6 +47,7 @@ impl AuditEventType {
             Self::VerificationPassed => "verification_passed",
             Self::VerificationFailed => "verification_failed",
             Self::ContractDeleted => "contract_deleted",
+            Self::ContractRejected => "contract_rejected",
         }
     }
 
@@ -56,6 +58,7 @@ impl AuditEventType {
             "verification_passed" => Self::VerificationPassed,
             "verification_failed" => Self::VerificationFailed,
             "contract_deleted" => Self::ContractDeleted,
+            "contract_rejected" => Self::ContractRejected,
             _ => Self::ContractCreated,
         }
     }
@@ -244,6 +247,47 @@ impl Storage {
         Ok(())
     }
 
+    /// Create a rejected contract for audit purposes.
+    ///
+    /// Unlike `create_contract`, this accepts raw JSON for checks (since parsing
+    /// may have failed) and stores the contract with status `rejected`.
+    pub async fn create_rejected_contract(
+        &self,
+        id: &str,
+        description: &str,
+        task: &str,
+        agent_id: &str,
+        language: &str,
+        checks_json: &str,
+        rejection_reason: &str,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        let now = Utc::now().to_rfc3339();
+
+        // Ensure agent exists
+        conn.execute(
+            "INSERT INTO agents (id, trust_score) VALUES (?1, 100.0)
+             ON CONFLICT(id) DO NOTHING",
+            params![agent_id],
+        )
+        .map_err(|e| format!("Insert agent: {e}"))?;
+
+        conn.execute(
+            "INSERT INTO contracts (id, description, task, agent_id, language, checks_json, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'rejected', ?7, ?7)",
+            params![id, description, task, agent_id, language, checks_json, now],
+        )
+        .map_err(|e| format!("Insert rejected contract: {e}"))?;
+
+        self.log_event_sync(
+            &conn,
+            id,
+            AuditEventType::ContractRejected,
+            Some(rejection_reason),
+        )?;
+        Ok(())
+    }
+
     /// Get a contract by ID.
     pub async fn get_contract(&self, id: &str) -> Result<Option<Contract>, String> {
         let conn = self.conn.lock().await;
@@ -290,6 +334,7 @@ impl Storage {
                     "failed" => ContractStatus::Failed,
                     "running" => ContractStatus::Running,
                     "review_required" => ContractStatus::ReviewRequired,
+                    "rejected" => ContractStatus::Rejected,
                     _ => ContractStatus::Pending,
                 };
                 let created_at = DateTime::parse_from_rfc3339(&created_str)
@@ -840,6 +885,7 @@ fn status_to_str(status: &ContractStatus) -> &'static str {
         ContractStatus::Failed => "failed",
         ContractStatus::Running => "running",
         ContractStatus::ReviewRequired => "review_required",
+        ContractStatus::Rejected => "rejected",
     }
 }
 
@@ -849,6 +895,7 @@ fn str_to_status(s: &str) -> ContractStatus {
         "failed" => ContractStatus::Failed,
         "running" => ContractStatus::Running,
         "review_required" => ContractStatus::ReviewRequired,
+        "rejected" => ContractStatus::Rejected,
         _ => ContractStatus::Pending,
     }
 }

@@ -282,6 +282,8 @@ pub enum ContractStatus {
     ReviewRequired,
     /// Verification is currently running.
     Running,
+    /// Contract was rejected during creation (invalid checks or meta-validation failure).
+    Rejected,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

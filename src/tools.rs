@@ -311,12 +311,16 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
         return ToolResult::error("Contract must have at least one check");
     }
 
+    // Serialize raw checks JSON before attempting to parse into Rust structs.
+    // This preserves the original payload for rejected contracts.
+    let raw_checks_json = serde_json::to_string(checks_value).unwrap_or_else(|_| "[]".into());
+
     let mut checks = Vec::new();
     for (i, check_val) in checks_value.iter().enumerate() {
         match serde_json::from_value::<Check>(check_val.clone()) {
             Ok(check) => checks.push(check),
             Err(e) => {
-                return ToolResult::error(format!(
+                let error_msg = format!(
                     "Invalid check at index {i}: {e}. \
                      Ensure check_type has a 'type' field with one of: \
                      command_succeeds, command_output_matches, file_exists, \
@@ -324,7 +328,24 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
                      json_schema_valid, value_in_range, diff_size_limit, assertion, \
                      python_type_check, pytest_result, python_import_graph, \
                      json_registry_consistency"
-                ))
+                );
+                // Store the rejected contract for audit
+                let rejected_id = uuid::Uuid::new_v4().to_string();
+                if let Err(store_err) = store
+                    .create_rejected_contract(
+                        &rejected_id,
+                        &description,
+                        &task,
+                        &agent_id,
+                        &language,
+                        &raw_checks_json,
+                        &error_msg,
+                    )
+                    .await
+                {
+                    tracing::warn!("Failed to store rejected contract: {store_err}");
+                }
+                return ToolResult::error(error_msg);
             }
         }
     }
@@ -360,7 +381,24 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
     }
 
     if let Some(msg) = err_msg {
-        return ToolResult::error(format!("Meta-Validation Failed: {msg}"));
+        let error_msg = format!("Meta-Validation Failed: {msg}");
+        // Store the rejected contract for audit
+        let rejected_id = uuid::Uuid::new_v4().to_string();
+        if let Err(store_err) = store
+            .create_rejected_contract(
+                &rejected_id,
+                &description,
+                &task,
+                &agent_id,
+                &language,
+                &raw_checks_json,
+                &error_msg,
+            )
+            .await
+        {
+            tracing::warn!("Failed to store rejected contract: {store_err}");
+        }
+        return ToolResult::error(error_msg);
     }
 
     let id = uuid::Uuid::new_v4().to_string();
