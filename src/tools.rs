@@ -315,65 +315,83 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
     // This preserves the original payload for rejected contracts.
     let raw_checks_json = serde_json::to_string(checks_value).unwrap_or_else(|_| "[]".into());
 
+    // ── Phase 1: Parse all checks, collecting ALL errors ────────
     let mut checks = Vec::new();
+    let mut parse_errors: Vec<String> = Vec::new();
+
     for (i, check_val) in checks_value.iter().enumerate() {
         match serde_json::from_value::<Check>(check_val.clone()) {
             Ok(check) => checks.push(check),
             Err(e) => {
-                let error_msg = check_type_error_hint(i, check_val, &e);
-                // Store the rejected contract for audit
-                let rejected_id = uuid::Uuid::new_v4().to_string();
-                if let Err(store_err) = store
-                    .create_rejected_contract(
-                        &rejected_id,
-                        &description,
-                        &task,
-                        &agent_id,
-                        &language,
-                        &raw_checks_json,
-                        &error_msg,
-                    )
-                    .await
-                {
-                    tracing::warn!("Failed to store rejected contract: {store_err}");
-                }
-                return ToolResult::error(error_msg);
+                parse_errors.push(check_type_error_hint(i, check_val, &e));
             }
         }
     }
 
-    // --- Meta-Validation: Enforce Language-Specific Rules ---
+    // ── Phase 2: Meta-validation (even if some checks failed to parse,
+    //    we can still check the ones that DID parse) ─────────────
     let lower_lang = language.to_lowercase();
-    let mut err_msg = None;
 
-    if lower_lang.contains("python") {
-        let has_type_check = checks.iter().any(|c| matches!(c.check_type, CheckType::PythonTypeCheck { .. }));
-        let has_tests = checks.iter().any(|c| matches!(c.check_type, CheckType::PytestResult { .. }));
-        if !has_type_check || !has_tests {
-            err_msg = Some("Python tasks must include both a 'python_type_check' AND a 'pytest_result' check.");
-        }
-    } else if lower_lang.contains("rust") {
-        let has_cargo_test = checks.iter().any(|c| {
-            if let CheckType::CommandSucceeds { command, .. } = &c.check_type {
-                command.contains("cargo test")
-            } else { false }
-        });
-        if !has_cargo_test {
-            err_msg = Some("Rust tasks must include a 'command_succeeds' check running 'cargo test'.");
-        }
-    } else if lower_lang.contains("js") || lower_lang.contains("typescript") || lower_lang.contains("html") || lower_lang.contains("css") {
-        let has_tests = checks.iter().any(|c| {
-            if let CheckType::CommandSucceeds { command, .. } = &c.check_type {
-                command.contains("test")
-            } else { false }
-        });
-        if !has_tests {
-            err_msg = Some("JS/TS/Web tasks must include a 'command_succeeds' check for testing (e.g., 'npm test' or 'jest').");
+    if parse_errors.is_empty() {
+        // Only enforce meta-validation when all checks parsed successfully,
+        // otherwise the agent needs to fix parse errors first anyway.
+        if lower_lang.contains("python") {
+            let has_type_check = checks.iter().any(|c| matches!(c.check_type, CheckType::PythonTypeCheck { .. }));
+            let has_tests = checks.iter().any(|c| matches!(c.check_type, CheckType::PytestResult { .. }));
+            if !has_type_check || !has_tests {
+                parse_errors.push(
+                    "Meta-Validation Failed: Python tasks must include both a \
+                     'python_type_check' AND a 'pytest_result' check."
+                        .into(),
+                );
+            }
+        } else if lower_lang.contains("rust") {
+            let has_cargo_test = checks.iter().any(|c| {
+                if let CheckType::CommandSucceeds { command, .. } = &c.check_type {
+                    command.contains("cargo test")
+                } else { false }
+                });
+            if !has_cargo_test {
+                parse_errors.push(
+                    "Meta-Validation Failed: Rust tasks must include a \
+                     'command_succeeds' check running 'cargo test'."
+                        .into(),
+                );
+            }
+        } else if lower_lang.contains("js") || lower_lang.contains("typescript") || lower_lang.contains("html") || lower_lang.contains("css") {
+            let has_tests = checks.iter().any(|c| {
+                if let CheckType::CommandSucceeds { command, .. } = &c.check_type {
+                    command.contains("test")
+                } else { false }
+            });
+            if !has_tests {
+                parse_errors.push(
+                    "Meta-Validation Failed: JS/TS/Web tasks must include a \
+                     'command_succeeds' check for testing (e.g., 'npm test' or 'jest')."
+                        .into(),
+                );
+            }
         }
     }
 
-    if let Some(msg) = err_msg {
-        let error_msg = format!("Meta-Validation Failed: {msg}");
+    // ── Phase 3: Return all collected errors at once ─────────────
+    if !parse_errors.is_empty() {
+        let error_count = parse_errors.len();
+        let combined_msg = format!(
+            "Contract rejected: {error_count} error(s) found.\n\
+             Fix ALL issues below and resubmit.\n\n\
+             {}\n",
+            parse_errors
+                .iter()
+                .enumerate()
+                .map(|(i, e)| format!(
+                    "━━━ Error {} of {} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n{}",
+                    i + 1, error_count, e
+                ))
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        );
+
         // Store the rejected contract for audit
         let rejected_id = uuid::Uuid::new_v4().to_string();
         if let Err(store_err) = store
@@ -384,13 +402,13 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
                 &agent_id,
                 &language,
                 &raw_checks_json,
-                &error_msg,
+                &combined_msg,
             )
             .await
         {
             tracing::warn!("Failed to store rejected contract: {store_err}");
         }
-        return ToolResult::error(error_msg);
+        return ToolResult::error(combined_msg);
     }
 
     let id = uuid::Uuid::new_v4().to_string();
