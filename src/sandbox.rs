@@ -398,6 +398,23 @@ fn suggest_safe_alternative(original_command: &str, blocked_pattern: &str) -> Op
              use 'command_output_matches' with a regex pattern instead."
                 .into(),
         ),
+        "||" => {
+            if original_command.ends_with("|| true") || original_command.ends_with("|| true ") {
+                Some(
+                    "Instead of appending '|| true' to ignore exit codes, \
+                     use a different check type like 'command_output_matches' \
+                     which does not fail on non-zero exit codes if that's what you need, \
+                     or handle the failure gracefully."
+                        .into(),
+                )
+            } else {
+                Some(
+                    "Shell fallback chaining with '||' is not allowed. \
+                     Please use explicit checks or scripts for conditional logic."
+                        .into(),
+                )
+            }
+        },
         _ => None,
     }
 }
@@ -810,5 +827,17 @@ mod tests {
         assert!(s.contains("working_dir"), "Should suggest working_dir: {s}");
         assert!(s.contains("/home/peter/project"), "Should include the path: {s}");
         assert!(s.contains("python -m pytest"), "Should include the command: {s}");
+    }
+
+    #[test]
+    fn test_or_true_suggestion() {
+        let cmd = "grep -c 'resolve' src/verification.rs || true";
+        match validate_command(cmd, false) {
+            CommandPolicy::Deny(reason) => {
+                assert!(reason.contains("||"));
+                assert!(reason.contains("Instead of appending '|| true'"));
+            }
+            other => panic!("Expected Deny with || suggestion, got {other:?}"),
+        }
     }
 }
