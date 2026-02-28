@@ -35,6 +35,10 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
                         "type": "string",
                         "description": "Primary programming language or tech stack for this task (e.g. 'python', 'rust', 'js')"
                     },
+                    "bypass_meta_validation_reason": {
+                        "type": "string",
+                        "description": "Optional reason to skip code-specific meta-validation checks (e.g. 'Nur HTML-Template bearbeitet'). Use when the task involves purely non-code changes where strict tests don't apply."
+                    },
                     "checks": {
                         "type": "array",
                         "description": "List of checks that must pass",
@@ -53,7 +57,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
                                 },
                                 "check_type": {
                                     "type": "object",
-                                    "description": "Check specification. Must include a 'type' field. Types: command_succeeds, command_output_matches, file_exists, file_contains_patterns, file_excludes_patterns, json_schema_valid, value_in_range, diff_size_limit, assertion, python_type_check, pytest_result, python_import_graph, json_registry_consistency"
+                                    "description": "Check specification. Must include a 'type' field. Types: command_succeeds, command_output_matches, file_exists, file_contains_patterns, file_excludes_patterns, json_schema_valid, value_in_range, diff_size_limit, assertion, python_type_check, pytest_result, python_import_graph, ast_query, json_registry_consistency.\nIMPORTANT FIELD NAMES:\n* 'python_type_check' requires an array named 'paths' (plural!).\n* 'pytest_result' requires a string named 'test_path'.\n* 'ast_query' and file checks require a string named 'path'."
                                 }
                             }
                         }
@@ -302,6 +306,8 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
         None => return ToolResult::error("'language' is mandatory for context-aware validation"),
     };
 
+    let bypass_reason = args.get("bypass_meta_validation_reason").and_then(|v| v.as_str());
+
     let checks_value = match args.get("checks").and_then(|v| v.as_array()) {
         Some(c) => c,
         None => return ToolResult::error("'checks' must be a non-empty array"),
@@ -332,7 +338,7 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
     //    we can still check the ones that DID parse) ─────────────
     let lower_lang = language.to_lowercase();
 
-    if parse_errors.is_empty() {
+    if parse_errors.is_empty() && bypass_reason.is_none() {
         // Only enforce meta-validation when all checks parsed successfully,
         // otherwise the agent needs to fix parse errors first anyway.
         if lower_lang.contains("python") {
@@ -341,7 +347,8 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
             if !has_type_check || !has_tests {
                 parse_errors.push(
                     "Meta-Validation Failed: Python tasks must include both a \
-                     'python_type_check' AND a 'pytest_result' check."
+                     'python_type_check' AND a 'pytest_result' check. \
+                     (If this is a non-code change, provide 'bypass_meta_validation_reason')"
                         .into(),
                 );
             }
@@ -354,7 +361,8 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
             if !has_cargo_test {
                 parse_errors.push(
                     "Meta-Validation Failed: Rust tasks must include a \
-                     'command_succeeds' check running 'cargo test'."
+                     'command_succeeds' check running 'cargo test'. \
+                     (If this is a non-code change, provide 'bypass_meta_validation_reason')"
                         .into(),
                 );
             }
@@ -367,7 +375,8 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
             if !has_tests {
                 parse_errors.push(
                     "Meta-Validation Failed: JS/TS/Web tasks must include a \
-                     'command_succeeds' check for testing (e.g., 'npm test' or 'jest')."
+                     'command_succeeds' check for testing (e.g., 'npm test' or 'jest'). \
+                     (If this is a non-code change, provide 'bypass_meta_validation_reason')"
                         .into(),
                 );
             }
@@ -416,6 +425,8 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
         return ToolResult::error(format!("Failed to store contract: {e}"));
     }
 
+    let bypass_msg = bypass_reason.map(|r| format!(" (Meta-validation bypassed: {})", r)).unwrap_or_default();
+
     ToolResult::json(&json!({
         "contract_id": id,
         "description": description,
@@ -423,9 +434,9 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
         "num_checks": checks.len(),
         "status": "pending",
         "message": format!(
-            "Contract created with {} check(s). Complete your task, then call \
+            "Contract created with {} check(s){}. Complete your task, then call \
              verify_run_contract with this contract_id to verify the result.",
-            checks.len()
+            checks.len(), bypass_msg
         )
     }))
 }
