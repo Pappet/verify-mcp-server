@@ -1,6 +1,8 @@
 {
   "description": "Verify new Rust module addition",
   "task": "Add a health check endpoint to the HTTP server",
+  "agent_id": "rust-agent",
+  "language": "rust",
   "checks": [
     {
       "name": "compiles",

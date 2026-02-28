@@ -60,6 +60,8 @@ Define expectations before starting work using `verify_create_contract`:
 {
   "description": "Adding user sort function",
   "task": "Add a sort_users_by_age() function",
+  "agent_id": "cli-user",
+  "language": "rust",
   "checks": [
     {
       "name": "tests_pass",

@@ -41,6 +41,12 @@ Instead of appending to JSON files or using an external database, the server use
 - It maintains structured trails of all created contracts, executions, and check results.
 - **No Migration Framework**: Because this is a local developer tool, if schema changes are required (e.g., adding `status` instead of `passed`), the database file (`~/.local/share/verify-mcp/verify.db`) is safely wiped and re-created rather than bloating the system with a heavy versioned migration tool like SeaORM/Diesel-migrations.
 
+### 4. Context-Sensitive Meta-Validation
+To prevent agents from skipping crucial checks on specific tech stacks, the server requires two metadata fields on every contract: `agent_id` and `language`.
+- Meta-validation rules enforce minimum check standards based on the `language`.
+- E.g., Python tasks MUST include `python_type_check` AND `pytest_result`.
+- Rust tasks MUST include a `command_succeeds` check running `cargo test`.
+
 ---
 
 ## Source Files
@@ -94,4 +100,4 @@ Implements the 3-tier security policies and regex filters to deny destructive be
 ## Additional References
 
 - [README.md](file:///home/peter/Projekte/verify-mcp-server/README.md) — The Quick Start guide and entry point.
-- [CLAUDE_roguelike_verification_v2.md](file:///home/peter/Projekte/verify-mcp-server/CLAUDE_roguelike_verification_v2.md) — A comprehensive verification template tailored for a roguelike Python/ECS project.
+- [CLAUDE_roguelike_verification_v2.md](file:///home/peter/Projekte/verify-mcp-server/examples/CLAUDE_roguelike_verification_v2.md) — A comprehensive verification template tailored for a roguelike Python/ECS project.

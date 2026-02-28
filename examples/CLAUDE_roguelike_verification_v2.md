@@ -505,6 +505,8 @@ Task: "Add ScheduleSystem that processes NPC schedules during ENEMY_TURN"
 {
   "description": "New ScheduleSystem phase system",
   "task": "Create ScheduleSystem that updates NPC Activity components based on WorldClockService time during ENEMY_TURN phase",
+  "agent_id": "claude-3.7-sonnet",
+  "language": "python",
   "checks": [
     {
       "name": "syntax_valid",
