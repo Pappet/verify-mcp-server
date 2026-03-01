@@ -4,6 +4,7 @@
 //! (respects XDG_DATA_HOME if set)
 
 use crate::contract::*;
+use crate::templates::*;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -142,6 +143,7 @@ impl Storage {
             conn: Arc::new(Mutex::new(conn)),
         };
         storage.init_schema_sync()?;
+        storage.seed_builtin_templates()?;
 
         Ok(storage)
     }
@@ -149,7 +151,10 @@ impl Storage {
     fn init_schema_sync(&self) -> Result<(), String> {
         // We need to run this synchronously during construction
         // Use try_lock since we know we're the only holder at init time
-        let conn = self.conn.try_lock().map_err(|e| format!("Lock error: {e}"))?;
+        let conn = self
+            .conn
+            .try_lock()
+            .map_err(|e| format!("Lock error: {e}"))?;
 
         conn.execute_batch(
             "
@@ -189,6 +194,19 @@ impl Storage {
                 event_type      TEXT NOT NULL,
                 details         TEXT,
                 created_at      TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS templates (
+                id TEXT PRIMARY KEY,
+                name TEXT UNIQUE NOT NULL,
+                description TEXT,
+                language TEXT NOT NULL,
+                source TEXT NOT NULL,
+                source_contract_id TEXT,
+                variables_json TEXT NOT NULL,
+                checks_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                usage_count INTEGER DEFAULT 0
             );
 
             CREATE INDEX IF NOT EXISTS idx_check_results_contract
@@ -326,7 +344,17 @@ impl Storage {
 
         match contract {
             None => Ok(None),
-            Some((id, description, task, agent_id, language, checks_json, status_str, created_str, workspace_hash)) => {
+            Some((
+                id,
+                description,
+                task,
+                agent_id,
+                language,
+                checks_json,
+                status_str,
+                created_str,
+                workspace_hash,
+            )) => {
                 let checks: Vec<Check> = serde_json::from_str(&checks_json)
                     .map_err(|e| format!("Deserialize checks: {e}"))?;
                 let status = match status_str.as_str() {
@@ -387,21 +415,24 @@ impl Storage {
                 .unwrap_or(3);
 
             if status == ContractStatus::Failed {
-                if old.status == ContractStatus::Passed && old.workspace_hash == new_workspace_hash {
+                if old.status == ContractStatus::Passed && old.workspace_hash == new_workspace_hash
+                {
                     // Flaky / Fake test detected - severe penalty
                     conn.execute(
                         "UPDATE agents SET trust_score = trust_score + ?1 WHERE id = ?2",
                         params![flaky_penalty, old.agent_id],
-                    ).map_err(|e| format!("Update agent score: {e}"))?;
+                    )
+                    .map_err(|e| format!("Update agent score: {e}"))?;
                 } else {
                     // Check for consecutive failures
                     let mut stmt = conn.prepare(
                         "SELECT event_type FROM audit_events WHERE contract_id = ?1 ORDER BY created_at DESC LIMIT ?2"
                     ).map_err(|e| format!("Prepare consecutive check: {e}"))?;
-                    
-                    let rows = stmt.query_map(params![id, max_retries], |row| row.get::<_, String>(0))
+
+                    let rows = stmt
+                        .query_map(params![id, max_retries], |row| row.get::<_, String>(0))
                         .map_err(|e| format!("Query consecutive: {e}"))?;
-                        
+
                     let mut recent_failures = 0;
                     for row in rows {
                         if let Ok(evt) = row {
@@ -420,7 +451,8 @@ impl Storage {
                         conn.execute(
                             "UPDATE agents SET trust_score = trust_score + ?1 WHERE id = ?2",
                             params![trial_penalty, old.agent_id],
-                        ).map_err(|e| format!("Update agent score: {e}"))?;
+                        )
+                        .map_err(|e| format!("Update agent score: {e}"))?;
                     }
                 }
             }
@@ -481,9 +513,18 @@ impl Storage {
         };
         let detail = format!(
             "{} passed, {} failed, {} unverified",
-            results.iter().filter(|r| r.status == CheckStatus::Passed).count(),
-            results.iter().filter(|r| r.status == CheckStatus::Failed).count(),
-            results.iter().filter(|r| r.status == CheckStatus::Unverified).count(),
+            results
+                .iter()
+                .filter(|r| r.status == CheckStatus::Passed)
+                .count(),
+            results
+                .iter()
+                .filter(|r| r.status == CheckStatus::Failed)
+                .count(),
+            results
+                .iter()
+                .filter(|r| r.status == CheckStatus::Unverified)
+                .count(),
         );
         self.log_event_sync(&conn, id, event_type, Some(&detail))?;
 
@@ -534,10 +575,18 @@ impl Storage {
 
         let mut summaries = Vec::new();
         for row in rows {
-            let (id, description, task, agent_id, language, status_str, checks_json, created_str, workspace_hash) =
-                row.map_err(|e| format!("Row error: {e}"))?;
-            let checks: Vec<Check> =
-                serde_json::from_str(&checks_json).unwrap_or_default();
+            let (
+                id,
+                description,
+                task,
+                agent_id,
+                language,
+                status_str,
+                checks_json,
+                created_str,
+                workspace_hash,
+            ) = row.map_err(|e| format!("Row error: {e}"))?;
+            let checks: Vec<Check> = serde_json::from_str(&checks_json).unwrap_or_default();
             let status = str_to_status(&status_str);
             let created_at = DateTime::parse_from_rfc3339(&created_str)
                 .map(|dt| dt.with_timezone(&Utc))
@@ -587,18 +636,12 @@ impl Storage {
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
         if let Some(status) = status_filter {
-            sql.push_str(&format!(
-                " AND c.status = ?{}",
-                param_values.len() + 1
-            ));
+            sql.push_str(&format!(" AND c.status = ?{}", param_values.len() + 1));
             param_values.push(Box::new(status.to_string()));
         }
 
         if let Some(d) = days {
-            sql.push_str(&format!(
-                " AND c.created_at >= ?{}",
-                param_values.len() + 1
-            ));
+            sql.push_str(&format!(" AND c.created_at >= ?{}", param_values.len() + 1));
             let cutoff = (Utc::now() - chrono::Duration::days(d)).to_rfc3339();
             param_values.push(Box::new(cutoff));
         }
@@ -609,7 +652,9 @@ impl Storage {
         ));
         param_values.push(Box::new(limit as i64));
 
-        let mut stmt = conn.prepare(&sql).map_err(|e| format!("Prepare history: {e}"))?;
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Prepare history: {e}"))?;
 
         let params_ref: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|p| p.as_ref()).collect();
@@ -637,8 +682,14 @@ impl Storage {
 
             // Load results for this contract
             let results = self.get_results_sync(&conn, &id)?;
-            let passed_checks = results.iter().filter(|r| r.status == CheckStatus::Passed).count();
-            let failed_checks = results.iter().filter(|r| r.status == CheckStatus::Failed).count();
+            let passed_checks = results
+                .iter()
+                .filter(|r| r.status == CheckStatus::Passed)
+                .count();
+            let failed_checks = results
+                .iter()
+                .filter(|r| r.status == CheckStatus::Failed)
+                .count();
             let total_duration_ms: u64 = results.iter().map(|r| r.duration_ms).sum();
 
             entries.push(HistoryEntry {
@@ -740,9 +791,8 @@ impl Storage {
             })
             .map_err(|e| format!("Query failures: {e}"))?;
 
-        let most_common_failures: Vec<FailureFrequency> = failure_rows
-            .filter_map(|r| r.ok())
-            .collect();
+        let most_common_failures: Vec<FailureFrequency> =
+            failure_rows.filter_map(|r| r.ok()).collect();
 
         // Agent stats
         let mut stmt = conn
@@ -756,7 +806,7 @@ impl Storage {
                 })
             })
             .map_err(|e| format!("Query agents: {e}"))?;
-            
+
         let agents: Vec<AgentStats> = agent_rows.filter_map(|r| r.ok()).collect();
 
         Ok(VerificationStats {
@@ -803,7 +853,9 @@ impl Storage {
                 )
             };
 
-        let mut stmt = conn.prepare(&sql).map_err(|e| format!("Prepare audit: {e}"))?;
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Prepare audit: {e}"))?;
         let params_ref: Vec<&dyn rusqlite::types::ToSql> =
             params_vec.iter().map(|p| p.as_ref()).collect();
 
@@ -872,6 +924,411 @@ impl Storage {
             params![contract_id, event_type.as_str(), details, now],
         )
         .map_err(|e| format!("Log event: {e}"))?;
+        Ok(())
+    }
+
+    // ── Templates ───────────────────────────────────────────────
+
+    pub async fn list_templates(&self) -> Result<Vec<TemplateSummary>, String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn
+            .prepare(
+                "SELECT name, description, language, source, usage_count, variables_json
+             FROM templates
+             ORDER BY usage_count DESC",
+            )
+            .map_err(|e| format!("Prepare list_templates: {e}"))?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                let variables_json: String = row.get(5)?;
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    variables_json,
+                ))
+            })
+            .map_err(|e| format!("Query list_templates: {e}"))?;
+
+        let mut summaries = Vec::new();
+        for row in rows {
+            let (name, description, language, source, usage_count, variables_json) =
+                row.map_err(|e| format!("Row: {e}"))?;
+
+            let variables: TemplateVariables = serde_json::from_str(&variables_json)
+                .unwrap_or_else(|_| TemplateVariables {
+                    required: Default::default(),
+                    optional: Default::default(),
+                });
+
+            summaries.push(TemplateSummary {
+                name,
+                description,
+                language,
+                source,
+                usage_count,
+                variables,
+            });
+        }
+
+        Ok(summaries)
+    }
+
+    pub async fn get_template(&self, name: &str) -> Result<Option<TemplateDefinition>, String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, description, language, source, source_contract_id, variables_json, checks_json, created_at, usage_count
+             FROM templates WHERE name = ?1",
+        ).map_err(|e| format!("Prepare get_template: {e}"))?;
+
+        let template = stmt
+            .query_row(params![name], |row| {
+                let variables_json: String = row.get(6)?;
+                let checks_json: String = row.get(7)?;
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    variables_json,
+                    checks_json,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, i64>(9)?,
+                ))
+            })
+            .optional()
+            .map_err(|e| format!("Query get_template: {e}"))?;
+
+        match template {
+            None => Ok(None),
+            Some((
+                id,
+                name,
+                description,
+                language,
+                source,
+                source_contract_id,
+                variables_json,
+                checks_json,
+                created_at,
+                usage_count,
+            )) => {
+                let variables: TemplateVariables = serde_json::from_str(&variables_json)
+                    .unwrap_or_else(|_| TemplateVariables {
+                        required: Default::default(),
+                        optional: Default::default(),
+                    });
+
+                Ok(Some(TemplateDefinition {
+                    id,
+                    name,
+                    description,
+                    language,
+                    source,
+                    source_contract_id,
+                    variables,
+                    checks_json,
+                    created_at,
+                    usage_count,
+                }))
+            }
+        }
+    }
+
+    pub async fn save_template(&self, template: &TemplateDefinition) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        self.save_template_sync(&conn, template)
+    }
+
+    fn save_template_sync(
+        &self,
+        conn: &Connection,
+        template: &TemplateDefinition,
+    ) -> Result<(), String> {
+        let conflict_clause = if template.source == "builtin" {
+            "ON CONFLICT(name) DO NOTHING"
+        } else {
+            "ON CONFLICT(name) DO UPDATE SET 
+             description=excluded.description, 
+             variables_json=excluded.variables_json, 
+             checks_json=excluded.checks_json"
+        };
+
+        let variables_json = serde_json::to_string(&template.variables).unwrap_or_default();
+
+        let sql = format!(
+            "INSERT INTO templates 
+            (id, name, description, language, source, source_contract_id, variables_json, checks_json, created_at, usage_count)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) {}",
+            conflict_clause
+        );
+
+        conn.execute(
+            &sql,
+            params![
+                template.id,
+                template.name,
+                template.description,
+                template.language,
+                template.source,
+                template.source_contract_id,
+                variables_json,
+                template.checks_json,
+                template.created_at,
+                template.usage_count
+            ],
+        )
+        .map_err(|e| format!("Insert template: {e}"))?;
+
+        Ok(())
+    }
+
+    pub async fn increment_template_usage(&self, name: &str) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "UPDATE templates SET usage_count = usage_count + 1 WHERE name = ?1",
+            params![name],
+        )
+        .map_err(|e| format!("Increment usage_count: {e}"))?;
+        Ok(())
+    }
+
+    fn seed_builtin_templates(&self) -> Result<(), String> {
+        let conn = self
+            .conn
+            .try_lock()
+            .map_err(|e| format!("Lock error in seed: {e}"))?;
+
+        let builtin_jsons = vec![
+            r#"{
+              "name": "python_new_endpoint",
+              "description": "New API endpoint with type checking and tests",
+              "language": "python",
+              "source": "builtin",
+              "variables_json": {
+                "required": {
+                  "working_dir": "Absolute path to project root",
+                  "module_path": "Path to the module file, e.g. src/app.py",
+                  "test_path": "Path to test file, e.g. tests/test_app.py"
+                },
+                "optional": {
+                  "endpoint_pattern": "Route pattern to verify, e.g. /api/users",
+                  "min_tests": "Minimum passing tests (default: 1)"
+                }
+              },
+              "checks_json": [
+                {
+                  "name": "endpoint_exists",
+                  "check_type": {
+                    "type": "file_contains_patterns",
+                    "path": "{{module_path}}",
+                    "required_patterns": ["{{endpoint_pattern}}"],
+                    "working_dir": "{{working_dir}}"
+                  },
+                  "_condition": "endpoint_pattern"
+                },
+                {
+                  "name": "type_check",
+                  "check_type": {
+                    "type": "python_type_check",
+                    "paths": ["{{module_path}}"],
+                    "checker": "mypy",
+                    "extra_args": ["--ignore-missing-imports"],
+                    "working_dir": "{{working_dir}}"
+                  }
+                },
+                {
+                  "name": "tests_pass",
+                  "check_type": {
+                    "type": "pytest_result",
+                    "test_path": "{{test_path}}",
+                    "min_passed": "{{min_tests:1}}",
+                    "working_dir": "{{working_dir}}"
+                  }
+                }
+              ]
+            }"#,
+            r#"{
+              "name": "python_bugfix",
+              "description": "Bugfix with type checking and regression test",
+              "language": "python",
+              "source": "builtin",
+              "variables_json": {
+                "required": {
+                  "working_dir": "Absolute path to project root",
+                  "test_path": "Path to test file, e.g. tests/test_bugfix.py"
+                },
+                "optional": {
+                  "source_dir": "Source directory to type-check (default: src/)",
+                  "min_tests": "Minimum passing tests (default: 1)"
+                }
+              },
+              "checks_json": [
+                {
+                  "name": "type_check",
+                  "check_type": {
+                    "type": "python_type_check",
+                    "paths": ["{{source_dir:src/}}"],
+                    "checker": "mypy",
+                    "extra_args": ["--ignore-missing-imports"],
+                    "working_dir": "{{working_dir}}"
+                  }
+                },
+                {
+                  "name": "tests_pass",
+                  "check_type": {
+                    "type": "pytest_result",
+                    "test_path": "{{test_path}}",
+                    "min_passed": "{{min_tests:1}}",
+                    "working_dir": "{{working_dir}}"
+                  }
+                }
+              ]
+            }"#,
+            r#"{
+              "name": "python_new_module",
+              "description": "New Python module with import safety, type checking and tests",
+              "language": "python",
+              "source": "builtin",
+              "variables_json": {
+                "required": {
+                  "working_dir": "Absolute path to project root",
+                  "module_path": "Path to the new module, e.g. src/billing.py",
+                  "test_path": "Path to test file, e.g. tests/test_billing.py"
+                },
+                "optional": {
+                  "min_tests": "Minimum passing tests (default: 1)"
+                }
+              },
+              "checks_json": [
+                {
+                  "name": "module_created",
+                  "check_type": {
+                    "type": "file_exists",
+                    "path": "{{module_path}}",
+                    "working_dir": "{{working_dir}}"
+                  }
+                },
+                {
+                  "name": "type_check",
+                  "check_type": {
+                    "type": "python_type_check",
+                    "paths": ["{{module_path}}"],
+                    "checker": "mypy",
+                    "extra_args": ["--ignore-missing-imports"],
+                    "working_dir": "{{working_dir}}"
+                  }
+                },
+                {
+                  "name": "tests_pass",
+                  "check_type": {
+                    "type": "pytest_result",
+                    "test_path": "{{test_path}}",
+                    "min_passed": "{{min_tests:1}}",
+                    "working_dir": "{{working_dir}}"
+                  }
+                }
+              ]
+            }"#,
+            r#"{
+              "name": "rust_feature",
+              "description": "New Rust feature with build and test verification",
+              "language": "rust",
+              "source": "builtin",
+              "variables_json": {
+                "required": {
+                  "working_dir": "Absolute path to Rust project root (where Cargo.toml is)"
+                },
+                "optional": {}
+              },
+              "checks_json": [
+                {
+                  "name": "builds_clean",
+                  "check_type": {
+                    "type": "command_succeeds",
+                    "command": "cargo build --release",
+                    "working_dir": "{{working_dir}}",
+                    "timeout_secs": 120
+                  }
+                },
+                {
+                  "name": "tests_pass",
+                  "check_type": {
+                    "type": "command_succeeds",
+                    "command": "cargo test",
+                    "working_dir": "{{working_dir}}",
+                    "timeout_secs": 120
+                  }
+                }
+              ]
+            }"#,
+            r#"{
+              "name": "html_template_change",
+              "description": "HTML/CSS/template change — no forced test requirements",
+              "language": "html",
+              "source": "builtin",
+              "variables_json": {
+                "required": {
+                  "working_dir": "Absolute path to project root",
+                  "template_path": "Path to the template file, e.g. src/templates/history.html"
+                },
+                "optional": {
+                  "expected_pattern": "Regex pattern that must be present after the change"
+                }
+              },
+              "checks_json": [
+                {
+                  "name": "change_verified",
+                  "check_type": {
+                    "type": "file_contains_patterns",
+                    "path": "{{template_path}}",
+                    "required_patterns": ["{{expected_pattern}}"],
+                    "working_dir": "{{working_dir}}"
+                  },
+                  "_condition": "expected_pattern"
+                }
+              ]
+            }"#,
+        ];
+
+        let now = Utc::now().to_rfc3339();
+
+        for json_str in builtin_jsons {
+            #[derive(Deserialize)]
+            struct BuiltinTemplate {
+                name: String,
+                description: String,
+                language: String,
+                source: String,
+                variables_json: TemplateVariables,
+                checks_json: serde_json::Value,
+            }
+
+            let parsed: BuiltinTemplate = serde_json::from_str(json_str)
+                .map_err(|e| format!("Failed to parse builtin template: {}", e))?;
+
+            let id = uuid::Uuid::new_v4().to_string();
+            let def = TemplateDefinition {
+                id,
+                name: parsed.name,
+                description: parsed.description,
+                language: parsed.language,
+                source: parsed.source,
+                source_contract_id: None,
+                variables: parsed.variables_json,
+                checks_json: serde_json::to_string(&parsed.checks_json).unwrap(),
+                created_at: now.clone(),
+                usage_count: 0,
+            };
+
+            self.save_template_sync(&conn, &def)?;
+        }
+
         Ok(())
     }
 }

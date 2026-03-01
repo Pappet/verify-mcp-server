@@ -48,9 +48,7 @@ pub fn determine_status(results: &[CheckResult]) -> ContractStatus {
         .iter()
         .any(|r| r.status == CheckStatus::Failed && r.severity == Severity::Error);
 
-    let has_unverified = results
-        .iter()
-        .any(|r| r.status == CheckStatus::Unverified);
+    let has_unverified = results.iter().any(|r| r.status == CheckStatus::Unverified);
 
     if has_error_failure {
         ContractStatus::Failed
@@ -76,9 +74,7 @@ async fn run_check(check: &Check, input: Option<&str>, ast_cache: &mut AstCache)
             working_dir,
             timeout_secs,
             sandbox,
-        } => {
-            run_command_succeeds(command, working_dir.as_deref(), *timeout_secs, *sandbox).await
-        }
+        } => run_command_succeeds(command, working_dir.as_deref(), *timeout_secs, *sandbox).await,
 
         CheckType::CommandOutputMatches {
             command,
@@ -97,7 +93,9 @@ async fn run_check(check: &Check, input: Option<&str>, ast_cache: &mut AstCache)
             .await
         }
 
-        CheckType::FileExists { path, working_dir } => check_file_exists(path, working_dir.as_deref()),
+        CheckType::FileExists { path, working_dir } => {
+            check_file_exists(path, working_dir.as_deref())
+        }
 
         CheckType::FileContainsPatterns {
             path,
@@ -117,7 +115,17 @@ async fn run_check(check: &Check, input: Option<&str>, ast_cache: &mut AstCache)
             query,
             mode,
             working_dir,
-        } => run_ast_query(path, language, query, mode, working_dir.as_deref(), ast_cache).await,
+        } => {
+            run_ast_query(
+                path,
+                language,
+                query,
+                mode,
+                working_dir.as_deref(),
+                ast_cache,
+            )
+            .await
+        }
 
         CheckType::JsonSchemaValid { schema } => check_json_schema(input, schema),
 
@@ -138,8 +146,14 @@ async fn run_check(check: &Check, input: Option<&str>, ast_cache: &mut AstCache)
             working_dir,
             timeout_secs,
         } => {
-            check_python_types(paths, checker, extra_args, working_dir.as_deref(), *timeout_secs)
-                .await
+            check_python_types(
+                paths,
+                checker,
+                extra_args,
+                working_dir.as_deref(),
+                *timeout_secs,
+            )
+            .await
         }
 
         CheckType::PytestResult {
@@ -166,7 +180,15 @@ async fn run_check(check: &Check, input: Option<&str>, ast_cache: &mut AstCache)
             fail_on_circular,
             working_dir,
             enforced_architecture,
-        } => check_python_import_graph(root_path, *fail_on_circular, working_dir.as_deref(), enforced_architecture.as_deref()).await,
+        } => {
+            check_python_import_graph(
+                root_path,
+                *fail_on_circular,
+                working_dir.as_deref(),
+                enforced_architecture.as_deref(),
+            )
+            .await
+        }
 
         CheckType::JsonRegistryConsistency {
             json_path,
@@ -174,7 +196,13 @@ async fn run_check(check: &Check, input: Option<&str>, ast_cache: &mut AstCache)
             source_path,
             reference_pattern,
             working_dir,
-        } => check_json_registry_consistency(json_path, id_field, source_path, reference_pattern.as_deref(), working_dir.as_deref()),
+        } => check_json_registry_consistency(
+            json_path,
+            id_field,
+            source_path,
+            reference_pattern.as_deref(),
+            working_dir.as_deref(),
+        ),
     }
 }
 
@@ -191,7 +219,11 @@ async fn run_command_succeeds(
             let passed = code == 0;
             let combined = format!("stdout:\n{stdout}\nstderr:\n{stderr}");
             RawResult {
-                status: if passed { CheckStatus::Passed } else { CheckStatus::Failed },
+                status: if passed {
+                    CheckStatus::Passed
+                } else {
+                    CheckStatus::Failed
+                },
                 message: if passed {
                     format!("Command succeeded (exit code 0)")
                 } else {
@@ -231,7 +263,11 @@ async fn run_command_output_matches(
             let matches = re.is_match(&stdout);
             let combined = format!("stdout:\n{stdout}\nstderr:\n{stderr}");
             RawResult {
-                status: if code == 0 && matches { CheckStatus::Passed } else { CheckStatus::Failed },
+                status: if code == 0 && matches {
+                    CheckStatus::Passed
+                } else {
+                    CheckStatus::Failed
+                },
                 message: if code != 0 {
                     format!("Command failed with exit code {code}")
                 } else if matches {
@@ -254,7 +290,11 @@ fn check_file_exists(path: &str, working_dir: Option<&str>) -> RawResult {
     let effective_path = resolve_path(path, working_dir);
     let exists = effective_path.exists();
     let mut result = RawResult {
-        status: if exists { CheckStatus::Passed } else { CheckStatus::Failed },
+        status: if exists {
+            CheckStatus::Passed
+        } else {
+            CheckStatus::Failed
+        },
         message: if exists {
             format!("File exists: {path}")
         } else {
@@ -266,7 +306,11 @@ fn check_file_exists(path: &str, working_dir: Option<&str>) -> RawResult {
     result
 }
 
-fn check_file_contains_patterns(path: &str, patterns: &[String], working_dir: Option<&str>) -> RawResult {
+fn check_file_contains_patterns(
+    path: &str,
+    patterns: &[String],
+    working_dir: Option<&str>,
+) -> RawResult {
     let effective_path = resolve_path(path, working_dir);
     let content = match std::fs::read_to_string(&effective_path) {
         Ok(c) => c,
@@ -314,7 +358,11 @@ fn check_file_contains_patterns(path: &str, patterns: &[String], working_dir: Op
     }
 }
 
-fn check_file_excludes_patterns(path: &str, patterns: &[String], working_dir: Option<&str>) -> RawResult {
+fn check_file_excludes_patterns(
+    path: &str,
+    patterns: &[String],
+    working_dir: Option<&str>,
+) -> RawResult {
     let effective_path = resolve_path(path, working_dir);
     let content = match std::fs::read_to_string(&effective_path) {
         Ok(c) => c,
@@ -346,16 +394,16 @@ fn check_file_excludes_patterns(path: &str, patterns: &[String], working_dir: Op
     if found.is_empty() {
         RawResult {
             status: CheckStatus::Passed,
-            message: format!("None of the {} forbidden patterns found in {path}", patterns.len()),
+            message: format!(
+                "None of the {} forbidden patterns found in {path}",
+                patterns.len()
+            ),
             details: None,
         }
     } else {
         RawResult {
             status: CheckStatus::Failed,
-            message: format!(
-                "{} forbidden pattern(s) found in {path}",
-                found.len()
-            ),
+            message: format!("{} forbidden pattern(s) found in {path}", found.len()),
             details: Some(format!("Found:\n{}", found.join("\n"))),
         }
     }
@@ -435,19 +483,19 @@ fn validate_json_structure(
         };
 
         // "integer" is also a valid "number"
-        let type_ok = actual_type == expected_type
-            || (expected_type == "number" && actual_type == "integer");
+        let type_ok =
+            actual_type == expected_type || (expected_type == "number" && actual_type == "integer");
 
         if !type_ok {
-            errors.push(format!("Expected type '{expected_type}', got '{actual_type}'"));
+            errors.push(format!(
+                "Expected type '{expected_type}', got '{actual_type}'"
+            ));
         }
     }
 
     // Check required fields for objects
     if let (Some(required), Some(obj)) = (
-        schema
-            .get("required")
-            .and_then(|r| r.as_array()),
+        schema.get("required").and_then(|r| r.as_array()),
         instance.as_object(),
     ) {
         for req in required {
@@ -501,7 +549,11 @@ fn check_value_in_range(input: Option<&str>, min: Option<f64>, max: Option<f64>)
     };
 
     RawResult {
-        status: if passed { CheckStatus::Passed } else { CheckStatus::Failed },
+        status: if passed {
+            CheckStatus::Passed
+        } else {
+            CheckStatus::Failed
+        },
         message: if passed {
             format!("Value {value} is within range {range_str}")
         } else {
@@ -556,7 +608,11 @@ fn check_diff_size(
     }
 
     RawResult {
-        status: if passed { CheckStatus::Passed } else { CheckStatus::Failed },
+        status: if passed {
+            CheckStatus::Passed
+        } else {
+            CheckStatus::Failed
+        },
         message: if passed {
             format!("Diff size OK: +{additions} -{deletions} lines")
         } else {
@@ -600,10 +656,12 @@ async fn run_ast_query(
     // 1. Resolve Language
     let language = match language_str.to_lowercase().as_str() {
         "python" => tree_sitter_python::LANGUAGE.into(),
-        _ => return RawResult {
-            status: CheckStatus::Failed,
-            message: format!("Unsupported language for AstQuery: {language_str}"),
-            details: Some("Currently supported languages: python".into()),
+        _ => {
+            return RawResult {
+                status: CheckStatus::Failed,
+                message: format!("Unsupported language for AstQuery: {language_str}"),
+                details: Some("Currently supported languages: python".into()),
+            }
         }
     };
 
@@ -616,20 +674,24 @@ async fn run_ast_query(
 
     let expanded_query = match expanded_query {
         Ok(q) => q,
-        Err(e) => return RawResult {
-            status: CheckStatus::Failed,
-            message: format!("Failed to expand AST macro: {e}"),
-            details: None,
+        Err(e) => {
+            return RawResult {
+                status: CheckStatus::Failed,
+                message: format!("Failed to expand AST macro: {e}"),
+                details: None,
+            }
         }
     };
 
     // 3. Parse Query
     let query = match tree_sitter::Query::new(&language, &expanded_query) {
         Ok(q) => q,
-        Err(e) => return RawResult {
-            status: CheckStatus::Failed,
-            message: format!("Invalid tree-sitter query: {e}"),
-            details: Some(expanded_query),
+        Err(e) => {
+            return RawResult {
+                status: CheckStatus::Failed,
+                message: format!("Invalid tree-sitter query: {e}"),
+                details: Some(expanded_query),
+            }
         }
     };
 
@@ -661,10 +723,12 @@ async fn run_ast_query(
         }
         let parsed_tree = match parser.parse(&content, None) {
             Some(t) => t,
-            None => return RawResult {
-                status: CheckStatus::Failed,
-                message: format!("Failed to parse file '{path}' into AST"),
-                details: None,
+            None => {
+                return RawResult {
+                    status: CheckStatus::Failed,
+                    message: format!("Failed to parse file '{path}' into AST"),
+                    details: None,
+                }
             }
         };
         ast_cache.insert(path.to_string(), parsed_tree.clone());
@@ -674,14 +738,14 @@ async fn run_ast_query(
     // 5. Execute Query
     let mut cursor = tree_sitter::QueryCursor::new();
     let mut match_count = 0;
-    
+
     // In newer tree-sitter versions, QueryMatches might not implement Iterator directly
     // because it yields items referencing the cursor. We use its inherent .next() method.
     let mut matches = cursor.matches(&query, tree.root_node(), content.as_bytes());
     while matches.next().is_some() {
         match_count += 1;
     }
-    
+
     let has_matches = match_count > 0;
 
     // 6. Evaluate Result based on Mode
@@ -698,7 +762,11 @@ async fn run_ast_query(
     }
 
     RawResult {
-        status: if passed { CheckStatus::Passed } else { CheckStatus::Failed },
+        status: if passed {
+            CheckStatus::Passed
+        } else {
+            CheckStatus::Failed
+        },
         message: if passed {
             format!("AstQuery passed for {path} (mode: {:?})", mode)
         } else {
@@ -723,15 +791,19 @@ fn expand_ast_macro(macro_str: &str, language: &str) -> Result<String, String> {
                 return Err("function_exists requires a function name argument".into());
             }
             let fn_name = args[0];
-            Ok(format!("(function_definition name: (identifier) @name (#eq? @name \"{fn_name}\"))"))
-        },
+            Ok(format!(
+                "(function_definition name: (identifier) @name (#eq? @name \"{fn_name}\"))"
+            ))
+        }
         ("python", "class_exists") => {
             if args.is_empty() {
                 return Err("class_exists requires a class name argument".into());
             }
             let class_name = args[0];
-            Ok(format!("(class_definition name: (identifier) @name (#eq? @name \"{class_name}\"))"))
-        },
+            Ok(format!(
+                "(class_definition name: (identifier) @name (#eq? @name \"{class_name}\"))"
+            ))
+        }
         ("python", "imports_module") => {
             if args.is_empty() {
                 return Err("imports_module requires a module name argument".into());
@@ -740,8 +812,10 @@ fn expand_ast_macro(macro_str: &str, language: &str) -> Result<String, String> {
             Ok(format!(
                 "(import_statement name: (dotted_name (identifier) @name (#eq? @name \"{module_name}\")))"
             ))
-        },
-        _ => Err(format!("Unknown macro '{macro_name}' for language '{language}'")),
+        }
+        _ => Err(format!(
+            "Unknown macro '{macro_name}' for language '{language}'"
+        )),
     }
 }
 
@@ -791,7 +865,10 @@ async fn check_python_types(
             }
 
             // mypy summary line: "Found X errors in Y files"
-            if let Some(summary) = lines.iter().find(|l| l.contains("Found") && l.contains("error")) {
+            if let Some(summary) = lines
+                .iter()
+                .find(|l| l.contains("Found") && l.contains("error"))
+            {
                 // Try to extract count from summary if we didn't parse individual lines
                 if errors == 0 {
                     if let Some(n) = extract_first_number(summary) {
@@ -820,7 +897,11 @@ async fn check_python_types(
             };
 
             RawResult {
-                status: if passed { CheckStatus::Passed } else { CheckStatus::Failed },
+                status: if passed {
+                    CheckStatus::Passed
+                } else {
+                    CheckStatus::Failed
+                },
                 message: if passed {
                     format!("{checker_cmd}: no type errors ({warnings} warnings)")
                 } else {
@@ -834,7 +915,11 @@ async fn check_python_types(
             message: format!("{checker_cmd} execution failed: {e}. Is {checker_cmd} installed?"),
             details: Some(format!(
                 "Hint: Install with `pip install {}`",
-                if checker_cmd == "pyright" { "pyright" } else { "mypy" }
+                if checker_cmd == "pyright" {
+                    "pyright"
+                } else {
+                    "mypy"
+                }
             )),
         },
     }
@@ -867,9 +952,7 @@ async fn check_pytest_result(
             for line in lines.iter().rev() {
                 let lower = line.to_lowercase();
                 // The pytest summary line contains "=" borders
-                if (lower.contains("passed")
-                    || lower.contains("failed")
-                    || lower.contains("error"))
+                if (lower.contains("passed") || lower.contains("failed") || lower.contains("error"))
                     && (lower.contains('=') || lower.contains("short test summary"))
                 {
                     if let Some(n) = extract_before_keyword(&lower, "passed") {
@@ -927,13 +1010,17 @@ async fn check_pytest_result(
                         if !current_block.is_empty() {
                             failure_blocks.push(current_block.clone());
                         }
-                        current_block = format!("{}\n", line.trim_matches('_').trim_matches(' ').trim());
+                        current_block =
+                            format!("{}\n", line.trim_matches('_').trim_matches(' ').trim());
                         continue;
                     }
                     // End of failures section
                     if line.contains("= short test summary info =")
-                        || (line.starts_with("=") && line.ends_with("=") && line.len() > 10
-                            && !line.contains("FAILURES") && !line.contains("ERRORS"))
+                        || (line.starts_with("=")
+                            && line.ends_with("=")
+                            && line.len() > 10
+                            && !line.contains("FAILURES")
+                            && !line.contains("ERRORS"))
                     {
                         if !current_block.is_empty() {
                             failure_blocks.push(current_block.clone());
@@ -1053,7 +1140,11 @@ async fn check_pytest_result(
             }
 
             RawResult {
-                status: if passed { CheckStatus::Passed } else { CheckStatus::Failed },
+                status: if passed {
+                    CheckStatus::Passed
+                } else {
+                    CheckStatus::Failed
+                },
                 message: if passed {
                     format!(
                         "pytest: {passed_count} passed, {skipped_count} skipped — all thresholds met"
@@ -1206,14 +1297,21 @@ print(json.dumps(result))
                             for (source_module, targets_val) in edges {
                                 let targets: Vec<String> = targets_val
                                     .as_array()
-                                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                                    .map(|arr| {
+                                        arr.iter()
+                                            .filter_map(|v| v.as_str().map(String::from))
+                                            .collect()
+                                    })
                                     .unwrap_or_default();
-                                
+
                                 for rule in rules {
                                     if let Ok(source_re) = Regex::new(&rule.source_match) {
                                         if source_re.is_match(source_module) {
                                             if let Some(allowed) = &rule.allowed_imports {
-                                                let allowed_res: Vec<Regex> = allowed.iter().filter_map(|p| Regex::new(p).ok()).collect();
+                                                let allowed_res: Vec<Regex> = allowed
+                                                    .iter()
+                                                    .filter_map(|p| Regex::new(p).ok())
+                                                    .collect();
                                                 for target in &targets {
                                                     let mut is_allowed = false;
                                                     for re in &allowed_res {
@@ -1231,7 +1329,10 @@ print(json.dumps(result))
                                                 }
                                             }
                                             if let Some(forbidden) = &rule.forbidden_imports {
-                                                let forbidden_res: Vec<Regex> = forbidden.iter().filter_map(|p| Regex::new(p).ok()).collect();
+                                                let forbidden_res: Vec<Regex> = forbidden
+                                                    .iter()
+                                                    .filter_map(|p| Regex::new(p).ok())
+                                                    .collect();
                                                 for target in &targets {
                                                     for re in &forbidden_res {
                                                         if re.is_match(target) {
@@ -1249,7 +1350,7 @@ print(json.dumps(result))
                             }
                         }
                     }
-                    
+
                     // Sort violations for deterministic output
                     architecture_violations.sort();
 
@@ -1258,19 +1359,25 @@ print(json.dumps(result))
                     } else {
                         true // just report
                     };
-                    
+
                     let architecture_passed = architecture_violations.is_empty();
                     let passed = cycles_passed && architecture_passed;
 
                     let mut details = format!(
                         "Import graph: {total_modules} modules, {total_edges} import edges\n"
                     );
-                    
+
                     if !architecture_violations.is_empty() {
-                        details.push_str(&format!("\nArchitecture Violations ({}):\n", architecture_violations.len()));
+                        details.push_str(&format!(
+                            "\nArchitecture Violations ({}):\n",
+                            architecture_violations.len()
+                        ));
                         for (i, violation) in architecture_violations.iter().enumerate() {
                             if i >= 30 {
-                                details.push_str(&format!("  ... and {} more\n", architecture_violations.len() - 30));
+                                details.push_str(&format!(
+                                    "  ... and {} more\n",
+                                    architecture_violations.len() - 30
+                                ));
                                 break;
                             }
                             details.push_str(&format!("  - {violation}\n"));
@@ -1298,21 +1405,31 @@ print(json.dumps(result))
                             ));
                         }
                     }
-                    
+
                     let mut err_msgs = Vec::new();
                     if !cycles_passed {
                         err_msgs.push(format!("{cycle_count} circular import(s)"));
                     }
                     if !architecture_passed {
-                        err_msgs.push(format!("{} architecture violation(s)", architecture_violations.len()));
+                        err_msgs.push(format!(
+                            "{} architecture violation(s)",
+                            architecture_violations.len()
+                        ));
                     }
 
                     RawResult {
-                        status: if passed { CheckStatus::Passed } else { CheckStatus::Failed },
+                        status: if passed {
+                            CheckStatus::Passed
+                        } else {
+                            CheckStatus::Failed
+                        },
                         message: if passed {
                             let mut ok_msg = format!("Import structure OK in {root_path} ({total_modules} modules scanned)");
                             if cycle_count > 0 && !fail_on_circular {
-                                ok_msg.push_str(&format!(" [{} circular imports reported only]", cycle_count));
+                                ok_msg.push_str(&format!(
+                                    " [{} circular imports reported only]",
+                                    cycle_count
+                                ));
                             }
                             ok_msg
                         } else {
@@ -1377,7 +1494,9 @@ fn check_json_registry_consistency(
         return RawResult {
             status: CheckStatus::Failed,
             message: format!("No '{id_field}' fields found in {json_path}"),
-            details: Some(format!("Expected to find fields named '{id_field}' in the JSON structure")),
+            details: Some(format!(
+                "Expected to find fields named '{id_field}' in the JSON structure"
+            )),
         };
     }
 
@@ -1442,7 +1561,11 @@ fn check_json_registry_consistency(
     }
 
     RawResult {
-        status: if passed { CheckStatus::Passed } else { CheckStatus::Failed },
+        status: if passed {
+            CheckStatus::Passed
+        } else {
+            CheckStatus::Failed
+        },
         message: if passed {
             format!(
                 "All {} ID(s) from {json_path} found in {source_path}",
@@ -1513,12 +1636,20 @@ fn resolve_path(path: &str, working_dir: Option<&str>) -> std::path::PathBuf {
 }
 
 fn add_working_dir_hint_if_needed(result: &mut RawResult, path: &str, working_dir: Option<&str>) {
-    if working_dir.is_none() && !Path::new(path).is_absolute() && result.status == CheckStatus::Failed {
-        if result.message.contains("No such file") || result.message.contains("NOT found") || result.message.contains("Cannot read file") {
-            let hint = format!("\n\n💡 HINT: The file path '{path}' appears to be relative, but no 'working_dir' \
+    if working_dir.is_none()
+        && !Path::new(path).is_absolute()
+        && result.status == CheckStatus::Failed
+    {
+        if result.message.contains("No such file")
+            || result.message.contains("NOT found")
+            || result.message.contains("Cannot read file")
+        {
+            let hint = format!(
+                "\n\n💡 HINT: The file path '{path}' appears to be relative, but no 'working_dir' \
 was set. The server resolves paths from its own working directory, not your project. \
 Add 'working_dir' to this check to specify the project root:\n\n\
-  \"working_dir\": \"/absolute/path/to/your/project\"");
+  \"working_dir\": \"/absolute/path/to/your/project\""
+            );
             if let Some(details) = &mut result.details {
                 details.push_str(&hint);
             } else {
@@ -1562,9 +1693,7 @@ async fn execute_command(
             let config = SandboxConfig::from_env();
             sandbox::execute_sandboxed(command, working_dir, timeout_secs, &config).await
         }
-        CommandPolicy::Deny(reason) => {
-            Err(format!("🛡 SECURITY: {reason}"))
-        }
+        CommandPolicy::Deny(reason) => Err(format!("🛡 SECURITY: {reason}")),
     }
 }
 
@@ -1581,13 +1710,10 @@ async fn execute_on_host(
         cmd.current_dir(dir);
     }
 
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(timeout_secs),
-        cmd.output(),
-    )
-    .await
-    .map_err(|_| format!("Command timed out after {timeout_secs}s"))?
-    .map_err(|e| format!("Failed to execute command: {e}"))?;
+    let output = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.output())
+        .await
+        .map_err(|_| format!("Command timed out after {timeout_secs}s"))?
+        .map_err(|e| format!("Failed to execute command: {e}"))?;
 
     let code = output.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -1606,9 +1732,9 @@ fn truncate(s: &str, max_len: usize) -> String {
 
 /// Compute a hash of the workspace directory, respecting .gitignore.
 pub fn compute_workspace_hash(working_dir: &str) -> String {
-    use sha2::{Sha256, Digest};
-    use std::fs;
     use ignore::WalkBuilder;
+    use sha2::{Digest, Sha256};
+    use std::fs;
     use std::io::Read;
 
     let mut hasher = Sha256::new();
@@ -1632,7 +1758,7 @@ pub fn compute_workspace_hash(working_dir: &str) -> String {
                 if let Ok(rel_path) = path.strip_prefix(working_dir) {
                     hasher.update(rel_path.to_string_lossy().as_bytes());
                 }
-                
+
                 let mut buffer = [0; 8192];
                 while let Ok(count) = file.read(&mut buffer) {
                     if count == 0 {
@@ -1664,7 +1790,7 @@ mod tests {
         let wd = dir.to_str().unwrap();
         let rel_path = "test_file.txt";
         let patterns = vec!["hello".to_string(), "test".to_string()];
-        
+
         // 1. With working_dir
         let result = check_file_contains_patterns(rel_path, &patterns, Some(wd));
         assert_eq!(result.status, CheckStatus::Passed);
@@ -1673,7 +1799,7 @@ mod tests {
         let result_no_wd = check_file_contains_patterns(rel_path, &patterns, None);
         assert_eq!(result_no_wd.status, CheckStatus::Failed);
         assert!(result_no_wd.details.unwrap().contains("💡 HINT:"));
-        
+
         fs::remove_dir_all(dir).unwrap();
     }
 }

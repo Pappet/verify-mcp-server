@@ -414,7 +414,7 @@ fn suggest_safe_alternative(original_command: &str, blocked_pattern: &str) -> Op
                         .into(),
                 )
             }
-        },
+        }
         _ => None,
     }
 }
@@ -470,7 +470,9 @@ pub async fn execute_sandboxed(
         .arg("--version")
         .output()
         .await
-        .map_err(|e| format!("Podman is not available: {e}. Install Podman to use sandboxed execution."))?;
+        .map_err(|e| {
+            format!("Podman is not available: {e}. Install Podman to use sandboxed execution.")
+        })?;
 
     if !podman_check.status.success() {
         return Err("Podman is installed but not working correctly.".into());
@@ -530,13 +532,10 @@ pub async fn execute_sandboxed(
     let mut cmd = Command::new("podman");
     cmd.args(&args);
 
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(timeout_secs),
-        cmd.output(),
-    )
-    .await
-    .map_err(|_| format!("Sandboxed command timed out after {timeout_secs}s"))?
-    .map_err(|e| format!("Failed to execute podman: {e}"))?;
+    let output = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.output())
+        .await
+        .map_err(|_| format!("Sandboxed command timed out after {timeout_secs}s"))?
+        .map_err(|e| format!("Failed to execute podman: {e}"))?;
 
     let code = output.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -580,33 +579,51 @@ mod tests {
     fn test_strip_simple_double_quotes() {
         let result = strip_quoted_content(r#"python -c "import x; y""#);
         // The content inside quotes should be replaced with spaces
-        assert!(!result.contains(';'), "semicolon inside quotes should be stripped: {result}");
-        assert!(result.contains("python"), "command outside quotes preserved: {result}");
+        assert!(
+            !result.contains(';'),
+            "semicolon inside quotes should be stripped: {result}"
+        );
+        assert!(
+            result.contains("python"),
+            "command outside quotes preserved: {result}"
+        );
     }
 
     #[test]
     fn test_strip_single_quotes() {
         let result = strip_quoted_content("python -c 'import x; y'");
-        assert!(!result.contains(';'), "semicolon inside single quotes should be stripped: {result}");
+        assert!(
+            !result.contains(';'),
+            "semicolon inside single quotes should be stripped: {result}"
+        );
     }
 
     #[test]
     fn test_strip_preserves_unquoted() {
         let result = strip_quoted_content("cargo check && rm -rf /");
-        assert!(result.contains("&&"), "unquoted && should be preserved: {result}");
+        assert!(
+            result.contains("&&"),
+            "unquoted && should be preserved: {result}"
+        );
     }
 
     #[test]
     fn test_strip_nested_quotes() {
         // python -c "x = 'hello; world'"
         let result = strip_quoted_content(r#"python -c "x = 'hello; world'""#);
-        assert!(!result.contains(';'), "semicolon in nested quotes stripped: {result}");
+        assert!(
+            !result.contains(';'),
+            "semicolon in nested quotes stripped: {result}"
+        );
     }
 
     #[test]
     fn test_strip_escaped_quotes() {
         let result = strip_quoted_content(r#"echo "hello \" world; danger""#);
-        assert!(!result.contains(';'), "semicolon after escaped quote stripped: {result}");
+        assert!(
+            !result.contains(';'),
+            "semicolon after escaped quote stripped: {result}"
+        );
     }
 
     // ── validate_command (with quote awareness) ─────────────────
@@ -618,16 +635,21 @@ mod tests {
             r#"python -c "import py_compile; py_compile.compile('file.py')""#,
             false,
         );
-        assert_eq!(policy, CommandPolicy::Allow, "python -c with quoted semicolon should be allowed");
+        assert_eq!(
+            policy,
+            CommandPolicy::Allow,
+            "python -c with quoted semicolon should be allowed"
+        );
     }
 
     #[test]
     fn test_python_c_with_single_quotes_allowed() {
-        let policy = validate_command(
-            "python -c 'import json; print(json.dumps({}))'",
-            false,
+        let policy = validate_command("python -c 'import json; print(json.dumps({}))'", false);
+        assert_eq!(
+            policy,
+            CommandPolicy::Allow,
+            "python -c with single-quoted semicolon should be allowed"
         );
-        assert_eq!(policy, CommandPolicy::Allow, "python -c with single-quoted semicolon should be allowed");
     }
 
     #[test]
@@ -644,7 +666,10 @@ mod tests {
         match validate_command("cd /home/peter/project && python -m pytest", false) {
             CommandPolicy::Deny(reason) => {
                 assert!(reason.contains("&&"));
-                assert!(reason.contains("working_dir"), "Should suggest working_dir: {reason}");
+                assert!(
+                    reason.contains("working_dir"),
+                    "Should suggest working_dir: {reason}"
+                );
             }
             other => panic!("Expected Deny with suggestion, got {other:?}"),
         }
@@ -818,15 +843,19 @@ mod tests {
 
     #[test]
     fn test_cd_and_suggestion() {
-        let suggestion = suggest_safe_alternative(
-            "cd /home/peter/project && python -m pytest",
-            "&&",
-        );
+        let suggestion =
+            suggest_safe_alternative("cd /home/peter/project && python -m pytest", "&&");
         assert!(suggestion.is_some());
         let s = suggestion.unwrap();
         assert!(s.contains("working_dir"), "Should suggest working_dir: {s}");
-        assert!(s.contains("/home/peter/project"), "Should include the path: {s}");
-        assert!(s.contains("python -m pytest"), "Should include the command: {s}");
+        assert!(
+            s.contains("/home/peter/project"),
+            "Should include the path: {s}"
+        );
+        assert!(
+            s.contains("python -m pytest"),
+            "Should include the command: {s}"
+        );
     }
 
     #[test]

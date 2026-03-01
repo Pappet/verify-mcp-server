@@ -3,11 +3,14 @@
 use crate::contract::*;
 use crate::protocol::*;
 use crate::storage::Storage;
+use crate::templates::{
+    instantiate_template, parameterize_contract, TemplateDefinition, TemplateVariables,
+};
 use crate::verification;
-use std::collections::HashSet;
-use std::path::Path;
 use regex::Regex;
 use serde_json::{json, Value};
+use std::collections::HashSet;
+use std::path::Path;
 
 /// Return all tool definitions for tools/list.
 pub fn tool_definitions() -> Vec<ToolDefinition> {
@@ -264,15 +267,101 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
                 idempotent_hint: Some(true),
             }),
         },
+        ToolDefinition {
+            name: "verify_list_templates".into(),
+            description: "List all available verification contract templates, both built-in and promoted. \
+                Returns template definitions including required and optional variables."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+            annotations: Some(ToolAnnotations {
+                read_only_hint: Some(true),
+                destructive_hint: Some(false),
+                idempotent_hint: Some(true),
+            }),
+        },
+        ToolDefinition {
+            name: "verify_create_from_template".into(),
+            description: "Create a new verification contract from an existing template. \
+                This bypasses meta-validation since templates are pre-validated."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["template_name", "variables", "agent_id"],
+                "properties": {
+                    "template_name": {
+                        "type": "string",
+                        "description": "Name of the template to use"
+                    },
+                    "variables": {
+                        "type": "object",
+                        "description": "Key-value map of variables to substitute into the template"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional human-readable description (overrides template default)"
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "Optional task description"
+                    },
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Unique identifier for the agent creating the contract"
+                    },
+                    "extra_checks": {
+                        "type": "array",
+                        "description": "Optional additional checks to append to the template",
+                        "items": { "type": "object" }
+                    }
+                }
+            }),
+            annotations: Some(ToolAnnotations {
+                read_only_hint: Some(false),
+                destructive_hint: Some(false),
+                idempotent_hint: Some(false),
+            }),
+        },
+        ToolDefinition {
+            name: "verify_promote_to_template".into(),
+            description: "Promote a successful contract into a reusable template. \
+                Only contracts with status 'passed' can be promoted."
+                .into(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["contract_id", "template_name", "description", "path_mapping"],
+                "properties": {
+                    "contract_id": {
+                        "type": "string",
+                        "description": "ID of the passed contract to promote"
+                    },
+                    "template_name": {
+                        "type": "string",
+                        "description": "Unique name for the new template"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Description of what the template is for"
+                    },
+                    "path_mapping": {
+                        "type": "object",
+                        "description": "Mapping from concrete values in the contract to variable names. Example: {\"/path/to/app.py\": \"module_path\"}"
+                    }
+                }
+            }),
+            annotations: Some(ToolAnnotations {
+                read_only_hint: Some(false),
+                destructive_hint: Some(false),
+                idempotent_hint: Some(false),
+            }),
+        },
     ]
 }
 
 /// Handle a tool call and return a ToolResult.
-pub async fn handle_tool_call(
-    name: &str,
-    args: &Value,
-    store: &Storage,
-) -> ToolResult {
+pub async fn handle_tool_call(name: &str, args: &Value, store: &Storage) -> ToolResult {
     match name {
         "verify_create_contract" => handle_create_contract(args, store).await,
         "verify_run_contract" => handle_run_contract(args, store).await,
@@ -283,6 +372,9 @@ pub async fn handle_tool_call(
         "verify_history" => handle_history(args, store).await,
         "verify_stats" => handle_stats(args, store).await,
         "verify_get_audit_trail" => handle_get_audit_trail(args, store).await,
+        "verify_list_templates" => handle_list_templates(args, store).await,
+        "verify_create_from_template" => handle_create_from_template(args, store).await,
+        "verify_promote_to_template" => handle_promote_to_template(args, store).await,
         _ => ToolResult::error(format!("Unknown tool: {name}")),
     }
 }
@@ -309,7 +401,9 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
         None => return ToolResult::error("'language' is mandatory for context-aware validation"),
     };
 
-    let bypass_reason = args.get("bypass_meta_validation_reason").and_then(|v| v.as_str());
+    let bypass_reason = args
+        .get("bypass_meta_validation_reason")
+        .and_then(|v| v.as_str());
 
     let checks_value = match args.get("checks").and_then(|v| v.as_array()) {
         Some(c) => c,
@@ -345,8 +439,12 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
         // Only enforce meta-validation when all checks parsed successfully,
         // otherwise the agent needs to fix parse errors first anyway.
         if lower_lang.contains("python") {
-            let has_type_check = checks.iter().any(|c| matches!(c.check_type, CheckType::PythonTypeCheck { .. }));
-            let has_tests = checks.iter().any(|c| matches!(c.check_type, CheckType::PytestResult { .. }));
+            let has_type_check = checks
+                .iter()
+                .any(|c| matches!(c.check_type, CheckType::PythonTypeCheck { .. }));
+            let has_tests = checks
+                .iter()
+                .any(|c| matches!(c.check_type, CheckType::PytestResult { .. }));
             if !has_type_check || !has_tests {
                 parse_errors.push(
                     "Meta-Validation Failed: Python tasks must include both a \
@@ -359,8 +457,10 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
             let has_cargo_test = checks.iter().any(|c| {
                 if let CheckType::CommandSucceeds { command, .. } = &c.check_type {
                     command.contains("cargo test")
-                } else { false }
-                });
+                } else {
+                    false
+                }
+            });
             if !has_cargo_test {
                 parse_errors.push(
                     "Meta-Validation Failed: Rust tasks must include a \
@@ -369,11 +469,17 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
                         .into(),
                 );
             }
-        } else if lower_lang.contains("js") || lower_lang.contains("typescript") || lower_lang.contains("html") || lower_lang.contains("css") {
+        } else if lower_lang.contains("js")
+            || lower_lang.contains("typescript")
+            || lower_lang.contains("html")
+            || lower_lang.contains("css")
+        {
             let has_tests = checks.iter().any(|c| {
                 if let CheckType::CommandSucceeds { command, .. } = &c.check_type {
                     command.contains("test")
-                } else { false }
+                } else {
+                    false
+                }
             });
             if !has_tests {
                 parse_errors.push(
@@ -398,7 +504,9 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
                 .enumerate()
                 .map(|(i, e)| format!(
                     "━━━ Error {} of {} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n{}",
-                    i + 1, error_count, e
+                    i + 1,
+                    error_count,
+                    e
                 ))
                 .collect::<Vec<_>>()
                 .join("\n\n")
@@ -435,7 +543,9 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
                 .enumerate()
                 .map(|(i, e)| format!(
                     "━━━ Dry-Run Issue {} of {} ━━━━━━━━━━━━━━━━━━━━\n{}",
-                    i + 1, error_count, e
+                    i + 1,
+                    error_count,
+                    e
                 ))
                 .collect::<Vec<_>>()
                 .join("\n\n")
@@ -461,11 +571,16 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
     }
 
     let id = uuid::Uuid::new_v4().to_string();
-    if let Err(e) = store.create_contract(&id, &description, &task, &agent_id, &language, &checks).await {
+    if let Err(e) = store
+        .create_contract(&id, &description, &task, &agent_id, &language, &checks)
+        .await
+    {
         return ToolResult::error(format!("Failed to store contract: {e}"));
     }
 
-    let bypass_msg = bypass_reason.map(|r| format!(" (Meta-validation bypassed: {})", r)).unwrap_or_default();
+    let bypass_msg = bypass_reason
+        .map(|r| format!(" (Meta-validation bypassed: {})", r))
+        .unwrap_or_default();
 
     ToolResult::json(&json!({
         "contract_id": id,
@@ -503,14 +618,31 @@ async fn handle_run_contract(args: &Value, store: &Storage) -> ToolResult {
     let status = verification::determine_status(&results);
     let new_workspace_hash = verification::compute_workspace_hash(".");
 
-    if let Err(e) = store.update_results(contract_id, status.clone(), &results, Some(new_workspace_hash)).await {
+    if let Err(e) = store
+        .update_results(
+            contract_id,
+            status.clone(),
+            &results,
+            Some(new_workspace_hash),
+        )
+        .await
+    {
         return ToolResult::error(format!("Failed to store results: {e}"));
     }
 
     // Build summary
-    let passed_count = results.iter().filter(|r| r.status == CheckStatus::Passed).count();
-    let failed_count = results.iter().filter(|r| r.status == CheckStatus::Failed).count();
-    let unverified_count = results.iter().filter(|r| r.status == CheckStatus::Unverified).count();
+    let passed_count = results
+        .iter()
+        .filter(|r| r.status == CheckStatus::Passed)
+        .count();
+    let failed_count = results
+        .iter()
+        .filter(|r| r.status == CheckStatus::Failed)
+        .count();
+    let unverified_count = results
+        .iter()
+        .filter(|r| r.status == CheckStatus::Unverified)
+        .count();
     let warnings = results
         .iter()
         .filter(|r| r.status == CheckStatus::Failed && r.severity == Severity::Warning)
@@ -635,7 +767,10 @@ async fn handle_get_report(args: &Value, store: &Storage) -> ToolResult {
 
     // Build a formatted report
     let mut report = String::new();
-    report.push_str(&format!("# Verification Report: {}\n\n", contract.description));
+    report.push_str(&format!(
+        "# Verification Report: {}\n\n",
+        contract.description
+    ));
     report.push_str(&format!("**Task:** {}\n", contract.task));
     report.push_str(&format!("**Status:** {:?}\n", contract.status));
     report.push_str(&format!(
@@ -644,7 +779,9 @@ async fn handle_get_report(args: &Value, store: &Storage) -> ToolResult {
     ));
 
     if contract.results.is_empty() {
-        report.push_str("_No verification results yet. Run verify_run_contract to execute checks._\n");
+        report.push_str(
+            "_No verification results yet. Run verify_run_contract to execute checks._\n",
+        );
     } else {
         report.push_str("## Check Results\n\n");
         for result in &contract.results {
@@ -670,9 +807,10 @@ async fn handle_get_report(args: &Value, store: &Storage) -> ToolResult {
         }
 
         // Unverified assertions warning
-        let unverified = contract.results.iter().any(|r| {
-            r.message.contains("UNVERIFIED")
-        });
+        let unverified = contract
+            .results
+            .iter()
+            .any(|r| r.message.contains("UNVERIFIED"));
         if unverified {
             report.push_str(
                 "\n⚠ **WARNING:** This report contains agent-provided assertions that \
@@ -701,10 +839,7 @@ async fn handle_delete_contract(args: &Value, store: &Storage) -> ToolResult {
 }
 
 async fn handle_history(args: &Value, store: &Storage) -> ToolResult {
-    let limit = args
-        .get("limit")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(20) as usize;
+    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
     let status_filter = args.get("status").and_then(|v| v.as_str());
     let days = args.get("days").and_then(|v| v.as_i64());
 
@@ -720,9 +855,7 @@ async fn handle_history(args: &Value, store: &Storage) -> ToolResult {
             (None, Some(d)) => format!(" (last {d} days)"),
             (None, None) => String::new(),
         };
-        return ToolResult::text(format!(
-            "No verification history found{filter_desc}."
-        ));
+        return ToolResult::text(format!("No verification history found{filter_desc}."));
     }
 
     ToolResult::json(&json!({
@@ -766,12 +899,16 @@ async fn handle_stats(args: &Value, store: &Storage) -> ToolResult {
     if !stats.agents.is_empty() {
         summary.push_str("\nAgent Trust Scores:\n");
         for agent in &stats.agents {
-            let status = if agent.trust_score >= 100.0 { "✓" } else if agent.trust_score > 50.0 { "⚠" } else { "✗" };
+            let status = if agent.trust_score >= 100.0 {
+                "✓"
+            } else if agent.trust_score > 50.0 {
+                "⚠"
+            } else {
+                "✗"
+            };
             summary.push_str(&format!(
                 "  {} {} ({:.1})\n",
-                status,
-                agent.id,
-                agent.trust_score
+                status, agent.id, agent.trust_score
             ));
         }
     }
@@ -796,10 +933,7 @@ async fn handle_stats(args: &Value, store: &Storage) -> ToolResult {
 }
 
 async fn handle_get_audit_trail(args: &Value, store: &Storage) -> ToolResult {
-    let limit = args
-        .get("limit")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(50) as usize;
+    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
     let contract_id = args.get("contract_id").and_then(|v| v.as_str());
 
     let events = match store.get_audit_events(contract_id, limit).await {
@@ -813,9 +947,7 @@ async fn handle_get_audit_trail(args: &Value, store: &Storage) -> ToolResult {
         } else {
             String::new()
         };
-        return ToolResult::text(format!(
-            "No audit events found{filter_desc}."
-        ));
+        return ToolResult::text(format!("No audit events found{filter_desc}."));
     }
 
     ToolResult::json(&json!({
@@ -825,6 +957,247 @@ async fn handle_get_audit_trail(args: &Value, store: &Storage) -> ToolResult {
             "contract_id": contract_id,
             "limit": limit,
         }
+    }))
+}
+
+async fn handle_list_templates(_args: &Value, store: &Storage) -> ToolResult {
+    let templates = match store.list_templates().await {
+        Ok(t) => t,
+        Err(e) => return ToolResult::error(format!("Database error: {e}")),
+    };
+
+    if templates.is_empty() {
+        return ToolResult::text("No templates available.");
+    }
+
+    let mut result_str = String::from("Available templates:\n\n");
+
+    let builtins: Vec<_> = templates.iter().filter(|t| t.source == "builtin").collect();
+    let promoted: Vec<_> = templates
+        .iter()
+        .filter(|t| t.source == "promoted")
+        .collect();
+
+    if !builtins.is_empty() {
+        result_str.push_str("Built-in:\n");
+        for t in builtins {
+            result_str.push_str(&format!("  {} — {}\n", t.name, t.description));
+            if !t.variables.required.is_empty() {
+                let req_keys: Vec<_> = t.variables.required.keys().cloned().collect();
+                result_str.push_str(&format!("    requires: {}\n", req_keys.join(", ")));
+            }
+            if !t.variables.optional.is_empty() {
+                let opt_keys: Vec<_> = t.variables.optional.keys().cloned().collect();
+                result_str.push_str(&format!("    optional: {}\n", opt_keys.join(", ")));
+            }
+            result_str.push_str(&format!("    used: {} times\n\n", t.usage_count));
+        }
+    }
+
+    if !promoted.is_empty() {
+        result_str.push_str("Promoted (from successful contracts):\n");
+        for t in promoted {
+            let from_contract = t
+                .variables
+                .required
+                .keys()
+                .next()
+                .map(|_| " [from contract]".to_string())
+                .unwrap_or_default();
+            result_str.push_str(&format!(
+                "  {} — {}{}\n",
+                t.name, t.description, from_contract
+            ));
+            if !t.variables.required.is_empty() {
+                let req_keys: Vec<_> = t.variables.required.keys().cloned().collect();
+                result_str.push_str(&format!("    requires: {}\n", req_keys.join(", ")));
+            }
+            if !t.variables.optional.is_empty() {
+                let opt_keys: Vec<_> = t.variables.optional.keys().cloned().collect();
+                result_str.push_str(&format!("    optional: {}\n", opt_keys.join(", ")));
+            }
+            result_str.push_str(&format!("    used: {} times\n\n", t.usage_count));
+        }
+    }
+
+    ToolResult::text(result_str.trim_end().to_string())
+}
+
+async fn handle_create_from_template(args: &Value, store: &Storage) -> ToolResult {
+    let template_name = match args.get("template_name").and_then(|v| v.as_str()) {
+        Some(v) => v,
+        None => return ToolResult::error("'template_name' is required"),
+    };
+
+    let variables_val = match args.get("variables").and_then(|v| v.as_object()) {
+        Some(v) => v,
+        None => return ToolResult::error("'variables' is required and must be an object"),
+    };
+
+    let mut variables: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for (k, v) in variables_val {
+        variables.insert(k.clone(), v.as_str().unwrap_or("").to_string());
+    }
+
+    let agent_id = match args.get("agent_id").and_then(|v| v.as_str()) {
+        Some(v) => v.to_string(),
+        None => return ToolResult::error("'agent_id' is mandatory"),
+    };
+
+    let template_opt = match store.get_template(template_name).await {
+        Ok(t) => t,
+        Err(e) => return ToolResult::error(format!("Database error: {e}")),
+    };
+
+    let template = match template_opt {
+        Some(t) => t,
+        None => {
+            if let Ok(all_tmpls) = store.list_templates().await {
+                let names: Vec<_> = all_tmpls.iter().map(|t| t.name.clone()).collect();
+                return ToolResult::error(format!(
+                    "Template '{}' not found.\n\nAvailable templates:\n  {}",
+                    template_name,
+                    names.join(", ")
+                ));
+            } else {
+                return ToolResult::error(format!("Template '{}' not found.", template_name));
+            }
+        }
+    };
+
+    if let Err(e) = store.increment_template_usage(template_name).await {
+        tracing::warn!("Failed to increment usage: {e}");
+    }
+
+    let (mut checks, tmpl_description, language) = match instantiate_template(&template, &variables)
+    {
+        Ok(res) => res,
+        Err(e) => return ToolResult::error(e),
+    };
+
+    let description = args
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&tmpl_description)
+        .to_string();
+    let task = args
+        .get("task")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Created from template")
+        .to_string();
+
+    if let Some(extra) = args.get("extra_checks").and_then(|v| v.as_array()) {
+        for (i, check_val) in extra.iter().enumerate() {
+            match serde_json::from_value::<Check>(check_val.clone()) {
+                Ok(check) => checks.push(check),
+                Err(e) => return ToolResult::error(check_type_error_hint(i, check_val, &e)),
+            }
+        }
+    }
+
+    let dry_run_errors = dry_run_validate(&checks);
+    if !dry_run_errors.is_empty() {
+        let error_count = dry_run_errors.len();
+        let combined_msg = format!(
+            "Contract dry-run failed: {error_count} issue(s) found.\n\n{}",
+            dry_run_errors.join("\n\n")
+        );
+        return ToolResult::error(combined_msg);
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    if let Err(e) = store
+        .create_contract(&id, &description, &task, &agent_id, &language, &checks)
+        .await
+    {
+        return ToolResult::error(format!("Failed to store contract: {e}"));
+    }
+
+    ToolResult::json(&json!({
+        "contract_id": id,
+        "description": description,
+        "task": task,
+        "num_checks": checks.len(),
+        "status": "pending",
+        "message": format!(
+            "Contract created from template '{}' with {} check(s). Complete your task, then call \
+             verify_run_contract with this contract_id to verify the result.",
+            template_name, checks.len()
+        )
+    }))
+}
+
+async fn handle_promote_to_template(args: &Value, store: &Storage) -> ToolResult {
+    let contract_id = match args.get("contract_id").and_then(|v| v.as_str()) {
+        Some(v) => v,
+        None => return ToolResult::error("'contract_id' is required"),
+    };
+    let template_name = match args.get("template_name").and_then(|v| v.as_str()) {
+        Some(v) => v,
+        None => return ToolResult::error("'template_name' is required"),
+    };
+    let description = match args.get("description").and_then(|v| v.as_str()) {
+        Some(v) => v,
+        None => return ToolResult::error("'description' is required"),
+    };
+    let path_mapping_val = match args.get("path_mapping").and_then(|v| v.as_object()) {
+        Some(v) => v,
+        None => return ToolResult::error("'path_mapping' is required and must be an object"),
+    };
+
+    let mut path_mapping: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut variables_required: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+
+    for (k, v) in path_mapping_val {
+        let var_name = v.as_str().unwrap_or("").to_string();
+        path_mapping.insert(k.clone(), var_name.clone());
+        variables_required.insert(var_name, "Promoted variable".into());
+    }
+
+    let contract = match store.get_contract(contract_id).await {
+        Ok(Some(c)) => c,
+        Ok(None) => return ToolResult::error(format!("Contract not found: {}", contract_id)),
+        Err(e) => return ToolResult::error(format!("Database error: {e}")),
+    };
+
+    let status_str = format!("{:?}", contract.status).to_lowercase();
+    if contract.status != ContractStatus::Passed {
+        return ToolResult::error(format!(
+            "Only contracts with status 'passed' can be promoted. Contract {} has status '{}'.",
+            contract_id, status_str
+        ));
+    }
+
+    let checks_json_str = serde_json::to_string(&contract.checks).unwrap_or_default();
+    let parameterized_checks = parameterize_contract(&checks_json_str, &path_mapping);
+
+    let template_def = TemplateDefinition {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: template_name.to_string(),
+        description: description.to_string(),
+        language: contract.language,
+        source: "promoted".to_string(),
+        source_contract_id: Some(contract_id.to_string()),
+        variables: TemplateVariables {
+            required: variables_required,
+            optional: std::collections::HashMap::new(),
+        },
+        checks_json: parameterized_checks,
+        created_at: chrono::Utc::now().to_rfc3339(),
+        usage_count: 0,
+    };
+
+    if let Err(e) = store.save_template(&template_def).await {
+        return ToolResult::error(format!("Failed to save template: {}", e));
+    }
+
+    ToolResult::json(&json!({
+        "status": "success",
+        "template_name": template_name,
+        "message": format!("Successfully promoted contract {} to template {}", contract_id, template_name),
+        "variables": template_def.variables.required.keys().cloned().collect::<Vec<_>>()
     }))
 }
 
@@ -838,10 +1211,15 @@ fn dry_run_validate(checks: &[Check]) -> Vec<String> {
         let mut check_wd = None;
 
         match &check.check_type {
-            CheckType::CommandSucceeds { working_dir, .. } | CheckType::FileExists { working_dir, .. } => {
+            CheckType::CommandSucceeds { working_dir, .. }
+            | CheckType::FileExists { working_dir, .. } => {
                 check_wd = working_dir.as_deref();
             }
-            CheckType::CommandOutputMatches { working_dir, pattern, .. } => {
+            CheckType::CommandOutputMatches {
+                working_dir,
+                pattern,
+                ..
+            } => {
                 check_wd = working_dir.as_deref();
                 if let Err(e) = Regex::new(pattern) {
                     errors.push(format!(
@@ -855,7 +1233,11 @@ fn dry_run_validate(checks: &[Check]) -> Vec<String> {
                     ));
                 }
             }
-            CheckType::FileContainsPatterns { working_dir, required_patterns, .. } => {
+            CheckType::FileContainsPatterns {
+                working_dir,
+                required_patterns,
+                ..
+            } => {
                 check_wd = working_dir.as_deref();
                 for (p_idx, pattern) in required_patterns.iter().enumerate() {
                     if let Err(e) = Regex::new(pattern) {
@@ -871,7 +1253,11 @@ fn dry_run_validate(checks: &[Check]) -> Vec<String> {
                     }
                 }
             }
-            CheckType::FileExcludesPatterns { working_dir, forbidden_patterns, .. } => {
+            CheckType::FileExcludesPatterns {
+                working_dir,
+                forbidden_patterns,
+                ..
+            } => {
                 check_wd = working_dir.as_deref();
                 for (p_idx, pattern) in forbidden_patterns.iter().enumerate() {
                     if let Err(e) = Regex::new(pattern) {
@@ -887,11 +1273,16 @@ fn dry_run_validate(checks: &[Check]) -> Vec<String> {
                     }
                 }
             }
-            CheckType::AstQuery { working_dir, query, .. } => {
+            CheckType::AstQuery {
+                working_dir, query, ..
+            } => {
                 check_wd = working_dir.as_deref();
                 let trimmed = query.trim();
                 if trimmed.is_empty() {
-                    errors.push(format!("Check '{}' (index {}): query is empty.", check_name, index));
+                    errors.push(format!(
+                        "Check '{}' (index {}): query is empty.",
+                        check_name, index
+                    ));
                 } else if !trimmed.starts_with("macro:") {
                     // Very basic unbalanced bracket check
                     let mut round = 0_i32;
@@ -917,8 +1308,10 @@ fn dry_run_validate(checks: &[Check]) -> Vec<String> {
                     }
                 }
             }
-            CheckType::PythonTypeCheck { working_dir, .. } | CheckType::PytestResult { working_dir, .. } 
-            | CheckType::PythonImportGraph { working_dir, .. } | CheckType::JsonRegistryConsistency { working_dir, .. } => {
+            CheckType::PythonTypeCheck { working_dir, .. }
+            | CheckType::PytestResult { working_dir, .. }
+            | CheckType::PythonImportGraph { working_dir, .. }
+            | CheckType::JsonRegistryConsistency { working_dir, .. } => {
                 check_wd = working_dir.as_deref();
             }
             _ => {}
@@ -978,9 +1371,7 @@ fn check_type_error_hint(index: usize, check_val: &Value, serde_err: &serde_json
                      {}\n\
                      ╰─ Example ────────────────────────────────────────\n\
                      {}",
-                    s.required,
-                    s.optional,
-                    s.example,
+                    s.required, s.optional, s.example,
                 ),
                 None => format!(
                     "Invalid check at index {index} ('{check_name}'): unknown check type '{t}'.\n\n\
@@ -1148,7 +1539,7 @@ fn check_type_schema(type_name: &str) -> Option<CheckTypeSchema> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contract::{Check, CheckType, Severity, QueryMode};
+    use crate::contract::{Check, CheckType, QueryMode, Severity};
 
     #[test]
     fn test_valid_regex() {

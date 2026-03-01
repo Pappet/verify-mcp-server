@@ -20,12 +20,13 @@ mod contract;
 mod protocol;
 mod sandbox;
 mod storage;
+mod templates;
 mod tools;
 mod verification;
 
 use protocol::*;
-use storage::Storage;
 use serde_json::{json, Value};
+use storage::Storage;
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, error, info};
 
@@ -79,11 +80,8 @@ async fn run_stdio_loop(store: Storage) -> Result<(), Box<dyn std::error::Error>
         let request: JsonRpcRequest = match serde_json::from_str(&line) {
             Ok(r) => r,
             Err(e) => {
-                let err_response = JsonRpcResponse::error(
-                    None,
-                    -32700,
-                    format!("Parse error: {e}"),
-                );
+                let err_response =
+                    JsonRpcResponse::error(None, -32700, format!("Parse error: {e}"));
                 write_response(&mut stdout, &err_response).await?;
                 continue;
             }
@@ -106,10 +104,7 @@ async fn run_stdio_loop(store: Storage) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-async fn handle_request(
-    request: &JsonRpcRequest,
-    store: &Storage,
-) -> Option<JsonRpcResponse> {
+async fn handle_request(request: &JsonRpcRequest, store: &Storage) -> Option<JsonRpcResponse> {
     let id = request.id.clone();
 
     match request.method.as_str() {
@@ -166,7 +161,9 @@ async fn handle_request(
                 }
             };
 
-            let args = params.arguments.unwrap_or(Value::Object(Default::default()));
+            let args = params
+                .arguments
+                .unwrap_or(Value::Object(Default::default()));
             info!("Tool call: {}", params.name);
 
             let result = tools::handle_tool_call(&params.name, &args, store).await;

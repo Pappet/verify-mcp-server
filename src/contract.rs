@@ -132,10 +132,7 @@ pub enum CheckType {
     },
 
     /// Check that a numeric value is within a range.
-    ValueInRange {
-        min: Option<f64>,
-        max: Option<f64>,
-    },
+    ValueInRange { min: Option<f64>, max: Option<f64> },
 
     /// Check that the number of lines changed is within bounds.
     DiffSizeLimit {
@@ -153,7 +150,6 @@ pub enum CheckType {
     },
 
     // ── Python-Specific Checks ──────────────────────────────────
-
     /// Run mypy or pyright and parse structured results.
     PythonTypeCheck {
         /// Files or directories to check (e.g. "ecs/systems/ai_system.py" or "ecs/").
