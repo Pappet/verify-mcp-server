@@ -4,6 +4,9 @@ use crate::contract::*;
 use crate::protocol::*;
 use crate::storage::Storage;
 use crate::verification;
+use std::collections::HashSet;
+use std::path::Path;
+use regex::Regex;
 use serde_json::{json, Value};
 
 /// Return all tool definitions for tools/list.
@@ -420,6 +423,43 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
         return ToolResult::error(combined_msg);
     }
 
+    // ── Phase 3.5: DRY-RUN VALIDATION ─────────────
+    let dry_run_errors = dry_run_validate(&checks);
+    if !dry_run_errors.is_empty() {
+        let error_count = dry_run_errors.len();
+        let combined_msg = format!(
+            "Contract dry-run failed: {error_count} issue(s) found.\n\
+             Fix ALL issues below and resubmit.\n\n{}",
+            dry_run_errors
+                .iter()
+                .enumerate()
+                .map(|(i, e)| format!(
+                    "━━━ Dry-Run Issue {} of {} ━━━━━━━━━━━━━━━━━━━━\n{}",
+                    i + 1, error_count, e
+                ))
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        );
+
+        // Store the rejected contract for audit
+        let rejected_id = uuid::Uuid::new_v4().to_string();
+        if let Err(store_err) = store
+            .create_rejected_contract(
+                &rejected_id,
+                &description,
+                &task,
+                &agent_id,
+                &language,
+                &raw_checks_json,
+                &combined_msg,
+            )
+            .await
+        {
+            tracing::warn!("Failed to store rejected contract: {store_err}");
+        }
+        return ToolResult::error(combined_msg);
+    }
+
     let id = uuid::Uuid::new_v4().to_string();
     if let Err(e) = store.create_contract(&id, &description, &task, &agent_id, &language, &checks).await {
         return ToolResult::error(format!("Failed to store contract: {e}"));
@@ -788,6 +828,127 @@ async fn handle_get_audit_trail(args: &Value, store: &Storage) -> ToolResult {
     }))
 }
 
+// ── Dry-Run Validation ──────────────────────────────────────────────
+fn dry_run_validate(checks: &[Check]) -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut seen_working_dirs = HashSet::new();
+
+    for (index, check) in checks.iter().enumerate() {
+        let check_name = &check.name;
+        let mut check_wd = None;
+
+        match &check.check_type {
+            CheckType::CommandSucceeds { working_dir, .. } | CheckType::FileExists { working_dir, .. } => {
+                check_wd = working_dir.as_deref();
+            }
+            CheckType::CommandOutputMatches { working_dir, pattern, .. } => {
+                check_wd = working_dir.as_deref();
+                if let Err(e) = Regex::new(pattern) {
+                    errors.push(format!(
+                        "Check '{}' (index {}): invalid regex in 'pattern': {}\n\n\
+                         💡 HINT: Test your regex at https://regex101.com (Rust flavor)\n\
+                         Common mistakes:\n\
+                         - Unescaped special chars: ( ) [ ] {{ }} need \\\n\
+                         - Unmatched brackets: '[1-9' → '[1-9]'\n\
+                         - Unescaped dots: 'app.py' → 'app\\.py'",
+                        check_name, index, e
+                    ));
+                }
+            }
+            CheckType::FileContainsPatterns { working_dir, required_patterns, .. } => {
+                check_wd = working_dir.as_deref();
+                for (p_idx, pattern) in required_patterns.iter().enumerate() {
+                    if let Err(e) = Regex::new(pattern) {
+                        errors.push(format!(
+                            "Check '{}' (index {}): invalid regex in 'required_patterns' at index {}: {}\n\n\
+                             💡 HINT: Test your regex at https://regex101.com (Rust flavor)\n\
+                             Common mistakes:\n\
+                             - Unescaped special chars: ( ) [ ] {{ }} need \\\n\
+                             - Unmatched brackets: '[1-9' → '[1-9]'\n\
+                             - Unescaped dots: 'app.py' → 'app\\.py'",
+                            check_name, index, p_idx, e
+                        ));
+                    }
+                }
+            }
+            CheckType::FileExcludesPatterns { working_dir, forbidden_patterns, .. } => {
+                check_wd = working_dir.as_deref();
+                for (p_idx, pattern) in forbidden_patterns.iter().enumerate() {
+                    if let Err(e) = Regex::new(pattern) {
+                        errors.push(format!(
+                            "Check '{}' (index {}): invalid regex in 'forbidden_patterns' at index {}: {}\n\n\
+                             💡 HINT: Test your regex at https://regex101.com (Rust flavor)\n\
+                             Common mistakes:\n\
+                             - Unescaped special chars: ( ) [ ] {{ }} need \\\n\
+                             - Unmatched brackets: '[1-9' → '[1-9]'\n\
+                             - Unescaped dots: 'app.py' → 'app\\.py'",
+                            check_name, index, p_idx, e
+                        ));
+                    }
+                }
+            }
+            CheckType::AstQuery { working_dir, query, .. } => {
+                check_wd = working_dir.as_deref();
+                let trimmed = query.trim();
+                if trimmed.is_empty() {
+                    errors.push(format!("Check '{}' (index {}): query is empty.", check_name, index));
+                } else if !trimmed.starts_with("macro:") {
+                    // Very basic unbalanced bracket check
+                    let mut round = 0_i32;
+                    let mut square = 0_i32;
+                    let mut curly = 0_i32;
+                    for c in trimmed.chars() {
+                        match c {
+                            '(' => round += 1,
+                            ')' => round -= 1,
+                            '[' => square += 1,
+                            ']' => square -= 1,
+                            '{' => curly += 1,
+                            '}' => curly -= 1,
+                            _ => {}
+                        }
+                    }
+                    if round != 0 || square != 0 || curly != 0 {
+                        errors.push(format!(
+                            "Check '{}' (index {}): AST query has unbalanced brackets. \
+                             (Round: {}, Square: {}, Curly: {})",
+                            check_name, index, round, square, curly
+                        ));
+                    }
+                }
+            }
+            CheckType::PythonTypeCheck { working_dir, .. } | CheckType::PytestResult { working_dir, .. } 
+            | CheckType::PythonImportGraph { working_dir, .. } | CheckType::JsonRegistryConsistency { working_dir, .. } => {
+                check_wd = working_dir.as_deref();
+            }
+            _ => {}
+        }
+
+        if let Some(wd) = check_wd {
+            if !wd.is_empty() && seen_working_dirs.insert(wd) {
+                let wd_path = Path::new(wd);
+                if !wd_path.exists() {
+                    errors.push(format!(
+                        "Check '{}' (index {}): working_dir '{}' does not exist.\n\n\
+                         💡 HINT: Verify the path is correct. Common issues:\n\
+                         - Typo in path\n\
+                         - Path is relative (use absolute path)\n\
+                         - Project not yet cloned to this location",
+                        check_name, index, wd
+                    ));
+                } else if !wd_path.is_dir() {
+                    errors.push(format!(
+                        "Check '{}' (index {}): working_dir '{}' exists but is not a directory.",
+                        check_name, index, wd
+                    ));
+                }
+            }
+        }
+    }
+
+    errors
+}
+
 // ── Error Hint System ───────────────────────────────────────────────
 
 /// Generate a targeted error message when a check fails to deserialize.
@@ -981,5 +1142,81 @@ fn check_type_schema(type_name: &str) -> Option<CheckTypeSchema> {
             example: r#"{"type": "json_registry_consistency", "json_path": "assets/data/items.json", "id_field": "id", "source_path": "entities/item_registry.py"}"#,
         }),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contract::{Check, CheckType, Severity, QueryMode};
+
+    #[test]
+    fn test_valid_regex() {
+        let checks = vec![Check {
+            name: "valid_regex_check".into(),
+            severity: Severity::Error,
+            check_type: CheckType::CommandOutputMatches {
+                command: "echo test".into(),
+                pattern: "^test$".into(),
+                working_dir: None,
+                timeout_secs: 30,
+                sandbox: None,
+            },
+        }];
+        let errors = dry_run_validate(&checks);
+        assert!(errors.is_empty(), "Should be valid regex");
+    }
+
+    #[test]
+    fn test_invalid_regex() {
+        let checks = vec![Check {
+            name: "invalid_regex_check".into(),
+            severity: Severity::Error,
+            check_type: CheckType::CommandOutputMatches {
+                command: "echo test".into(),
+                pattern: "[1-9".into(),
+                working_dir: None,
+                timeout_secs: 30,
+                sandbox: None,
+            },
+        }];
+        let errors = dry_run_validate(&checks);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("invalid regex in 'pattern'"));
+    }
+
+    #[test]
+    fn test_invalid_working_dir() {
+        let checks = vec![Check {
+            name: "invalid_wd_check".into(),
+            severity: Severity::Error,
+            check_type: CheckType::CommandSucceeds {
+                command: "cargo test".into(),
+                working_dir: Some("/nonexistent/path/here/123XYZ".into()),
+                timeout_secs: 30,
+                sandbox: None,
+            },
+        }];
+        let errors = dry_run_validate(&checks);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("does not exist"));
+    }
+
+    #[test]
+    fn test_ast_query_validation() {
+        let checks = vec![Check {
+            name: "unbalanced_ast_query".into(),
+            severity: Severity::Error,
+            check_type: CheckType::AstQuery {
+                path: "src/main.rs".into(),
+                language: "rust".into(),
+                query: "(function_item) (".into(),
+                mode: QueryMode::Required,
+                working_dir: None,
+            },
+        }];
+        let errors = dry_run_validate(&checks);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("unbalanced brackets"));
     }
 }
