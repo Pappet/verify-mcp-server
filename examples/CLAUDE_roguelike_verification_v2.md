@@ -19,6 +19,59 @@ This project uses the `verify` MCP server for contract-based verification.
 
 **Never skip verification.** Not because you're "confident", not for small changes, not for JSON-only edits.
 
+### Using Templates for Common Tasks
+
+For recurring scenarios, prefer templates over building checks from scratch:
+
+```
+verify_list_templates             → See what's available
+verify_create_from_template       → Create a contract with variables
+verify_promote_to_template        → Save a successful contract as a reusable template
+```
+
+Example — creating a contract from a template:
+```json
+{
+  "template_name": "python_new_module",
+  "agent_id": "claude-sonnet-4-5",
+  "task": "Create new schedule system module",
+  "variables": {
+    "working_dir": ".",
+    "module_path": "ecs/systems/schedule_system.py",
+    "test_path": "tests/verify_schedule_system.py"
+  }
+}
+```
+
+---
+
+## Contract Requirements
+
+Every contract requires:
+- **`agent_id`**: Identifies the agent creating the contract.
+- **`language`**: Primary language/stack (e.g. `"python"`, `"rust"`, `"html"`).
+
+### Meta-Validation Rules
+
+Based on the `language`, minimum checks are enforced:
+- **Python**: Must include `python_type_check` AND `pytest_result`.
+- **Rust**: Must include a `command_succeeds` check running `cargo test`.
+- **JS/TS/Web**: Must include a test-related `command_succeeds` check.
+
+For non-code changes (HTML templates, JSON-only edits, documentation), bypass with:
+```json
+"bypass_meta_validation_reason": "Only edited HTML template, no Python logic changed"
+```
+
+### Dry-Run Validation
+
+Before a contract is stored, the server validates:
+- All regex patterns compile correctly
+- All `working_dir` paths exist and are directories
+- All AST queries have balanced brackets
+
+Invalid contracts are rejected immediately with actionable diagnostics. **All errors are returned at once** — fix them all in one pass.
+
 ---
 
 ## Baseline Checks (ALWAYS include)
@@ -362,6 +415,8 @@ Use instead of `command_succeeds` with mypy — gives structured error counts an
 }
 ```
 
+> **Important field name:** `python_type_check` requires `paths` (plural, an array), not `path`.
+
 ### Structured Pytest Results
 
 Use instead of `command_succeeds` with pytest — enforces thresholds on pass/fail/skip:
@@ -379,6 +434,8 @@ Use instead of `command_succeeds` with pytest — enforces thresholds on pass/fa
   }
 }
 ```
+
+> **Important field name:** `pytest_result` requires `test_path` (singular, a string), not `test_paths`.
 
 For system-specific tests:
 
@@ -497,6 +554,16 @@ Use `verify_quick_check` for ad-hoc checks during work:
 
 ---
 
+## Debugging & History
+
+If you are stuck and repeatedly failing a contract, you can check your history and the exact audit trail of the contract:
+
+- `verify_history`: View past contracts and their outcomes across sessions to identify recurring problems.
+- `verify_stats`: See aggregate pass rates, most commonly failing checks, and agent trust scores.
+- `verify_get_audit_trail`: Get the exact lifecycle (audit trail) of a specific contract using its `contract_id`. Useful to track how often an agent failed before passing and what kind of failures occurred.
+
+---
+
 ## Full Contract Example: Adding a New ECS Phase System
 
 Task: "Add ScheduleSystem that processes NPC schedules during ENEMY_TURN"
@@ -505,7 +572,7 @@ Task: "Add ScheduleSystem that processes NPC schedules during ENEMY_TURN"
 {
   "description": "New ScheduleSystem phase system",
   "task": "Create ScheduleSystem that updates NPC Activity components based on WorldClockService time during ENEMY_TURN phase",
-  "agent_id": "claude-3.7-sonnet",
+  "agent_id": "claude-sonnet-4-5",
   "language": "python",
   "checks": [
     {
