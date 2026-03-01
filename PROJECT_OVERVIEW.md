@@ -18,7 +18,7 @@ A **Rust-based MCP (Model Context Protocol) server** that provides **contract-ba
 | **Binary** | `target/release/verify-mcp-server` |
 | **Persistence** | SQLite at `~/.local/share/verify-mcp/verify.db` |
 | **MCP Tools** | 12 tools exposed |
-| **Check Types** | 13 supported verification check types |
+| **Check Types** | 17 supported verification check types |
 
 ---
 
@@ -50,7 +50,8 @@ To prevent agents from skipping crucial checks on specific tech stacks, the serv
 - Meta-validation rules enforce minimum check standards based on the `language`.
 - E.g., Python tasks MUST include `python_type_check` AND `pytest_result`.
 - Rust tasks MUST include a `command_succeeds` check running `cargo test`.
-- JS/TS/Web tasks MUST include a test-related `command_succeeds` check.
+- JS/TS tasks MUST include a `jest_vitest_result` check, and TS additionally needs `typescript_type_check`.
+- HTML/CSS tasks MUST include a test-related `command_succeeds` check.
 - Non-code changes can bypass meta-validation by providing a `bypass_meta_validation_reason`.
 
 ### 5. Multi-Stage Contract Validation
@@ -91,7 +92,7 @@ MCP protocol types: `JsonRpcRequest`, `JsonRpcResponse`, `ToolDefinition`, `Tool
 Data model for contracts and checks. Defines:
 - `Contract` — a set of expectations with metadata (`agent_id`, `language`, `workspace_hash`)
 - `Check` — a single verifiable check with severity
-- `CheckType` — the 13 supported check types (commands, files, AstQuery, JSON schema, pytest, import graph w/ architecture rules, etc.)
+- `CheckType` — the 17 supported check types (commands, files, AstQuery, JSON schema, pytest, TypeScript types, Jest/Vitest results, import graph w/ architecture rules, etc.)
 - `CheckResult` — contains a `CheckStatus` (`Passed`, `Failed`, `Unverified`).
 - `ContractStatus` — Overall health (`Pending`, `Running`, `Passed`, `Failed`, `ReviewRequired`, `Rejected`).
 - `ArchitectureRule` — import constraints for `PythonImportGraph` checks.
@@ -104,12 +105,15 @@ MCP tool definitions and call handlers. Exposes 12 tools for contract lifecycle,
 - Check type schema documentation for the error hint system.
 
 ### [verification.rs](src/verification.rs)
-The verification engine. Implements all 13 check evaluation mechanisms, including:
+The verification engine. Implements all 17 check evaluation mechanisms, including:
 - Command evaluations with security-aware dispatch to strict `CheckStatus` results.
-- `AstQuery`: AST-based semantic analysis using `tree-sitter` with macro expansion (e.g. `macro:function_exists:name`).
+- `AstQuery`: AST-based semantic analysis using `tree-sitter` for Python, JS, TS, HTML, and CSS, with macro expansion (e.g. `macro:function_exists:name`, `macro:react_component_exists:name`).
 - `PythonImportGraph`: Extracts internal import relationships, detects cycles, and verifies against optional architectural rules.
 - `PytestResult`: Structured pytest output parsing with pass/fail/skip thresholds and detailed failure extraction.
 - `PythonTypeCheck`: Structured mypy/pyright output parsing.
+- `TypescriptTypeCheck`: Runs `tsc --noEmit` to validate TypeScript files.
+- `JestVitestResult`: Parses structured Jest/Vitest JSON reports.
+- `CssHtmlConsistency`: Verifies that CSS classes used in HTML files exist in the corresponding CSS code.
 - `JsonRegistryConsistency`: Cross-references JSON data files against Python source registries.
 - Workspace hashing via `ignore` crate (respects `.gitignore`) for flaky-detection support.
 
@@ -144,7 +148,7 @@ Template system for reusable contract patterns. Provides:
 | `rusqlite` (bundled) | SQLite storage |
 | `tracing` + `tracing-subscriber` | Structured logging |
 | `thiserror` | Error handling |
-| `tree-sitter` + `tree-sitter-python` | AST-based semantic code analysis |
+| `tree-sitter` + grammars | AST-based semantic code analysis (Python, JS, TS, HTML, CSS) |
 | `ignore` | Gitignore-aware file walking for workspace hashing |
 | `sha2` | SHA-256 workspace hashing for flaky detection |
 

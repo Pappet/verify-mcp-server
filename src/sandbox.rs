@@ -119,6 +119,11 @@ const WHITELISTED_COMMANDS: &[&str] = &[
     "npx",
     "yarn",
     "pnpm",
+    "tsc",
+    "jest",
+    "vitest",
+    "eslint",
+    "prettier",
     // Go tooling
     "go",
     "golint",

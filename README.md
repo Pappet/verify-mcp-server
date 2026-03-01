@@ -157,7 +157,7 @@ The server exposes 12 MCP tools:
 
 ## Check Types
 
-The server supports 13 check types for comprehensive verification:
+The server supports 17 check types for comprehensive verification:
 
 | Check Type | Description |
 |---|---|
@@ -175,6 +175,9 @@ The server supports 13 check types for comprehensive verification:
 | `pytest_result` | Structured pytest with pass/fail/skip thresholds |
 | `python_import_graph` | Circular import detection with architecture rules |
 | `json_registry_consistency` | Verify JSON IDs exist in Python registries |
+| `typescript_type_check` | Run tsc --noEmit to check TypeScript types |
+| `jest_vitest_result` | Run and parse Jest/Vitest JSON test reports |
+| `css_html_consistency` | Ensure all HTML classes in a file exist in the CSS file |
 
 ## Safety Features
 
@@ -184,7 +187,7 @@ Contracts go through multiple validation stages before being accepted:
 
 1. **Check Parsing** — All checks are deserialized with targeted error messages. If a field name is wrong (e.g. `path` vs `paths`), the agent gets a specific hint showing exactly which fields are required, with a copy-paste example.
 
-2. **Meta-Validation** — Language-specific minimum standards are enforced (e.g. Python tasks must have type checks and tests). Can be bypassed with `bypass_meta_validation_reason` for non-code changes.
+2. **Meta-Validation** — Language-specific minimum standards are enforced (e.g. Python tasks must have type checks and tests, JS tasks must have tests, TS tasks must have type checks and tests). Can be bypassed with `bypass_meta_validation_reason` for non-code changes.
 
 3. **Dry-Run Validation** — Before a contract is stored, all regex patterns are compiled, working directories are verified, and AST queries are checked for balanced brackets. Invalid contracts are rejected immediately with actionable diagnostics.
 

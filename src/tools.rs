@@ -63,7 +63,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
                                 },
                                 "check_type": {
                                     "type": "object",
-                                    "description": "Check specification. Must include a 'type' field. Types: command_succeeds, command_output_matches, file_exists, file_contains_patterns, file_excludes_patterns, json_schema_valid, value_in_range, diff_size_limit, assertion, python_type_check, pytest_result, python_import_graph, ast_query, json_registry_consistency.\nIMPORTANT FIELD NAMES:\n* 'python_type_check' requires an array named 'paths' (plural!).\n* 'pytest_result' requires a string named 'test_path'.\n* 'ast_query' and file checks require a string named 'path'."
+                                    "description": "Check specification. Must include a 'type' field. Types: command_succeeds, command_output_matches, file_exists, file_contains_patterns, file_excludes_patterns, json_schema_valid, value_in_range, diff_size_limit, assertion, python_type_check, pytest_result, python_import_graph, json_registry_consistency, typescript_type_check, jest_vitest_result, css_html_consistency, ast_query.\nIMPORTANT FIELD NAMES:\n* 'python_type_check' and 'typescript_type_check' require an array named 'paths'.\n* 'pytest_result' and 'jest_vitest_result' require a string named 'test_path'.\n* 'ast_query' and file checks require a string named 'path'."
                                 }
                             }
                         }
@@ -469,11 +469,34 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
                         .into(),
                 );
             }
-        } else if lower_lang.contains("js")
-            || lower_lang.contains("typescript")
-            || lower_lang.contains("html")
-            || lower_lang.contains("css")
-        {
+        } else if lower_lang.contains("javascript") || lower_lang == "js" {
+            let has_tests = checks
+                .iter()
+                .any(|c| matches!(c.check_type, CheckType::JestVitestResult { .. }));
+            if !has_tests {
+                parse_errors.push(
+                    "Meta-Validation Failed: JavaScript tasks must include a \
+                     'jest_vitest_result' check. \
+                     (If this is a non-code change, provide 'bypass_meta_validation_reason')"
+                        .into(),
+                );
+            }
+        } else if lower_lang.contains("typescript") || lower_lang == "ts" {
+            let has_type_check = checks
+                .iter()
+                .any(|c| matches!(c.check_type, CheckType::TypescriptTypeCheck { .. }));
+            let has_tests = checks
+                .iter()
+                .any(|c| matches!(c.check_type, CheckType::JestVitestResult { .. }));
+            if !has_type_check || !has_tests {
+                parse_errors.push(
+                    "Meta-Validation Failed: TypeScript tasks must include both a \
+                     'typescript_type_check' AND a 'jest_vitest_result' check. \
+                     (If this is a non-code change, provide 'bypass_meta_validation_reason')"
+                        .into(),
+                );
+            }
+        } else if lower_lang.contains("html") || lower_lang.contains("css") {
             let has_tests = checks.iter().any(|c| {
                 if let CheckType::CommandSucceeds { command, .. } = &c.check_type {
                     command.contains("test")
@@ -483,8 +506,8 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
             });
             if !has_tests {
                 parse_errors.push(
-                    "Meta-Validation Failed: JS/TS/Web tasks must include a \
-                     'command_succeeds' check for testing (e.g., 'npm test' or 'jest'). \
+                    "Meta-Validation Failed: HTML/CSS tasks must include a \
+                     'command_succeeds' check for testing. \
                      (If this is a non-code change, provide 'bypass_meta_validation_reason')"
                         .into(),
                 );
@@ -1380,7 +1403,8 @@ fn check_type_error_hint(index: usize, check_val: &Value, serde_err: &serde_json
                      │ file_contains_patterns  │ file_excludes_patterns │ ast_query\n\
                      │ json_schema_valid       │ value_in_range         │ diff_size_limit\n\
                      │ assertion               │ python_type_check      │ pytest_result\n\
-                     │ python_import_graph     │ json_registry_consistency"
+                     │ python_import_graph     │ json_registry_consistency\n\
+                     │ typescript_type_check   │ jest_vitest_result     │ css_html_consistency"
                 ),
             }
         }
@@ -1531,6 +1555,27 @@ fn check_type_schema(type_name: &str) -> Option<CheckTypeSchema> {
             optional: "│  reference_pattern: string  — regex with {} placeholder for ID\n\
                        │  working_dir: string",
             example: r#"{"type": "json_registry_consistency", "json_path": "assets/data/items.json", "id_field": "id", "source_path": "entities/item_registry.py"}"#,
+        }),
+        "typescript_type_check" => Some(CheckTypeSchema {
+            required: "│  paths: [string, ...]  — files or directories to check",
+            optional: "│  working_dir: string\n\
+                       │  timeout_secs: integer  (default: 120)",
+            example: r#"{"type": "typescript_type_check", "paths": ["."], "working_dir": "."}"#,
+        }),
+        "jest_vitest_result" => Some(CheckTypeSchema {
+            required: "│  test_path: string  — path to test file or directory or command flags",
+            optional: "│  min_passed: integer     (minimum tests that must pass)\n\
+                       │  max_failures: integer    (default: 0)\n\
+                       │  max_skipped: integer\n\
+                       │  working_dir: string\n\
+                       │  timeout_secs: integer    (default: 120)",
+            example: r#"{"type": "jest_vitest_result", "test_path": "tests/", "min_passed": 1, "max_failures": 0, "working_dir": "."}"#,
+        }),
+        "css_html_consistency" => Some(CheckTypeSchema {
+            required: "│  html_path: string    — path to HTML file\n\
+                       │  css_path: string      — path to CSS file",
+            optional: "│  working_dir: string",
+            example: r#"{"type": "css_html_consistency", "html_path": "index.html", "css_path": "styles.css", "working_dir": "."}"#,
         }),
         _ => None,
     }

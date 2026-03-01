@@ -216,6 +216,45 @@ pub enum CheckType {
         #[serde(default)]
         working_dir: Option<String>,
     },
+
+    // ── JS/TS/HTML-Specific Checks ──────────────────────────────
+    
+    /// Run tsc --noEmit and parse structured results.
+    TypescriptTypeCheck {
+        /// Files or directories to check, usually the tsconfig path or just "."
+        #[serde(default)]
+        paths: Vec<String>,
+        #[serde(default)]
+        working_dir: Option<String>,
+        #[serde(default = "default_type_check_timeout")]
+        timeout_secs: u64,
+    },
+
+    /// Run jest or vitest with JSON reporter and parse structured results natively.
+    JestVitestResult {
+        /// Test path or expression.
+        test_path: String,
+        #[serde(default)]
+        working_dir: Option<String>,
+        #[serde(default)]
+        min_passed: Option<usize>,
+        #[serde(default)]
+        max_failures: Option<usize>,
+        #[serde(default)]
+        max_skipped: Option<usize>,
+        #[serde(default = "default_type_check_timeout")]
+        timeout_secs: u64,
+    },
+
+    /// Check that CSS selectors exist for all classes defined in HTML.
+    CssHtmlConsistency {
+        /// Path to the HTML file (e.g. "index.html").
+        html_path: String,
+        /// Path to the CSS file (e.g. "styles.css").
+        css_path: String,
+        #[serde(default)]
+        working_dir: Option<String>,
+    },
 }
 
 fn default_timeout() -> u64 {
