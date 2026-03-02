@@ -279,7 +279,7 @@ fn default_query_mode() -> QueryMode {
 
 /// Modes for generic AST queries.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum QueryMode {
     /// The query must find matches in the source file.
     Required,
@@ -302,7 +302,7 @@ pub struct ArchitectureRule {
 
 /// How severe a check failure is.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum Severity {
     /// Contract fails immediately.
     Error,
@@ -315,7 +315,7 @@ pub enum Severity {
 // ── Verification Results ────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum ContractStatus {
     /// Contract defined, not yet verified.
     Pending,
@@ -332,7 +332,7 @@ pub enum ContractStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum CheckStatus {
     Passed,
     Failed,
@@ -369,4 +369,16 @@ pub struct ContractSummary {
     pub num_checks: usize,
     pub created_at: DateTime<Utc>,
     pub workspace_hash: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_contract_status_serialization() {
+        let status = ContractStatus::ReviewRequired;
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json, serde_json::Value::String("review_required".into()));
+    }
 }
