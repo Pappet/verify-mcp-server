@@ -1280,12 +1280,32 @@ async fn check_pytest_result(
     }
 }
 
+fn sanitize_path_for_python(input: &str) -> Result<String, String> {
+    for c in input.chars() {
+        if !c.is_alphanumeric() && c != '/' && c != '_' && c != '-' && c != '.' {
+            return Err(format!("path contains invalid character: '{}'", c));
+        }
+    }
+    Ok(input.to_string())
+}
+
 async fn check_python_import_graph(
     root_path: &str,
     fail_on_circular: bool,
     working_dir: Option<&str>,
     enforced_architecture: Option<&[ArchitectureRule]>,
 ) -> RawResult {
+    let root_path = match sanitize_path_for_python(root_path) {
+        Ok(p) => p,
+        Err(e) => {
+            return RawResult {
+                status: CheckStatus::Failed,
+                message: format!("root_path contains unsafe characters: {}", e),
+                details: None,
+            };
+        }
+    };
+
     // Python script that detects circular imports by analyzing import statements
     let python_script = format!(
         r#"
@@ -2149,5 +2169,36 @@ mod tests {
         assert!(result_no_wd.details.unwrap().contains("💡 HINT:"));
 
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn test_sanitize_path_for_python_normal() {
+        let path = "ecs/systems";
+        let result = sanitize_path_for_python(path);
+        assert_eq!(result.unwrap(), "ecs/systems");
+    }
+
+    #[test]
+    fn test_sanitize_path_for_python_injection() {
+        let path = "'; os.system('id'); '";
+        let result = sanitize_path_for_python(path);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "path contains invalid character: '''");
+    }
+
+    #[test]
+    fn test_sanitize_path_for_python_backticks() {
+        let path = "`id`";
+        let result = sanitize_path_for_python(path);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "path contains invalid character: '`'");
+    }
+
+    #[test]
+    fn test_sanitize_path_for_python_subshell() {
+        let path = "$(id)";
+        let result = sanitize_path_for_python(path);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "path contains invalid character: '$'");
     }
 }
