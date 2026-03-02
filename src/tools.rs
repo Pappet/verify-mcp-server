@@ -433,86 +433,9 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
 
     // ── Phase 2: Meta-validation (even if some checks failed to parse,
     //    we can still check the ones that DID parse) ─────────────
-    let lower_lang = language.to_lowercase();
-
     if parse_errors.is_empty() && bypass_reason.is_none() {
-        // Only enforce meta-validation when all checks parsed successfully,
-        // otherwise the agent needs to fix parse errors first anyway.
-        if lower_lang.contains("python") {
-            let has_type_check = checks
-                .iter()
-                .any(|c| matches!(c.check_type, CheckType::PythonTypeCheck { .. }));
-            let has_tests = checks
-                .iter()
-                .any(|c| matches!(c.check_type, CheckType::PytestResult { .. }));
-            if !has_type_check || !has_tests {
-                parse_errors.push(
-                    "Meta-Validation Failed: Python tasks must include both a \
-                     'python_type_check' AND a 'pytest_result' check. \
-                     (If this is a non-code change, provide 'bypass_meta_validation_reason')"
-                        .into(),
-                );
-            }
-        } else if lower_lang.contains("rust") {
-            let has_cargo_test = checks.iter().any(|c| {
-                if let CheckType::CommandSucceeds { command, .. } = &c.check_type {
-                    command.contains("cargo test")
-                } else {
-                    false
-                }
-            });
-            if !has_cargo_test {
-                parse_errors.push(
-                    "Meta-Validation Failed: Rust tasks must include a \
-                     'command_succeeds' check running 'cargo test'. \
-                     (If this is a non-code change, provide 'bypass_meta_validation_reason')"
-                        .into(),
-                );
-            }
-        } else if lower_lang.contains("javascript") || lower_lang == "js" {
-            let has_tests = checks
-                .iter()
-                .any(|c| matches!(c.check_type, CheckType::JestVitestResult { .. }));
-            if !has_tests {
-                parse_errors.push(
-                    "Meta-Validation Failed: JavaScript tasks must include a \
-                     'jest_vitest_result' check. \
-                     (If this is a non-code change, provide 'bypass_meta_validation_reason')"
-                        .into(),
-                );
-            }
-        } else if lower_lang.contains("typescript") || lower_lang == "ts" {
-            let has_type_check = checks
-                .iter()
-                .any(|c| matches!(c.check_type, CheckType::TypescriptTypeCheck { .. }));
-            let has_tests = checks
-                .iter()
-                .any(|c| matches!(c.check_type, CheckType::JestVitestResult { .. }));
-            if !has_type_check || !has_tests {
-                parse_errors.push(
-                    "Meta-Validation Failed: TypeScript tasks must include both a \
-                     'typescript_type_check' AND a 'jest_vitest_result' check. \
-                     (If this is a non-code change, provide 'bypass_meta_validation_reason')"
-                        .into(),
-                );
-            }
-        } else if lower_lang.contains("html") || lower_lang.contains("css") {
-            let has_tests = checks.iter().any(|c| {
-                if let CheckType::CommandSucceeds { command, .. } = &c.check_type {
-                    command.contains("test")
-                } else {
-                    false
-                }
-            });
-            if !has_tests {
-                parse_errors.push(
-                    "Meta-Validation Failed: HTML/CSS tasks must include a \
-                     'command_succeeds' check for testing. \
-                     (If this is a non-code change, provide 'bypass_meta_validation_reason')"
-                        .into(),
-                );
-            }
-        }
+        let meta_errors = meta_validate(&language, &checks);
+        parse_errors.extend(meta_errors);
     }
 
     // ── Phase 3: Return all collected errors at once ─────────────
@@ -1224,6 +1147,73 @@ async fn handle_promote_to_template(args: &Value, store: &Storage) -> ToolResult
     }))
 }
 
+fn meta_validate(language: &str, checks: &[Check]) -> Vec<String> {
+    let mut errors = Vec::new();
+    let lower_lang = language.to_lowercase();
+
+    if lower_lang.contains("python") {
+        let has_type_check = checks
+            .iter()
+            .any(|c| matches!(c.check_type, CheckType::PythonTypeCheck { .. }));
+        let has_tests = checks
+            .iter()
+            .any(|c| matches!(c.check_type, CheckType::PytestResult { .. }));
+        if !has_type_check || !has_tests {
+            errors.push(
+                "Meta-Validation Failed: Python tasks must include both a \
+                 'python_type_check' AND a 'pytest_result' check. \
+                 (If this is a non-code change, provide 'bypass_meta_validation_reason')"
+                    .into(),
+            );
+        }
+    } else if lower_lang.contains("rust") {
+        let has_cargo_test = checks.iter().any(|c| {
+            if let CheckType::CommandSucceeds { command, .. } = &c.check_type {
+                command.contains("cargo test")
+            } else {
+                false
+            }
+        });
+        if !has_cargo_test {
+            errors.push(
+                "Meta-Validation Failed: Rust tasks must include a \
+                 'command_succeeds' check running 'cargo test'. \
+                 (If this is a non-code change, provide 'bypass_meta_validation_reason')"
+                    .into(),
+            );
+        }
+    } else if lower_lang.contains("javascript") || lower_lang == "js" {
+        let has_tests = checks
+            .iter()
+            .any(|c| matches!(c.check_type, CheckType::JestVitestResult { .. }));
+        if !has_tests {
+            errors.push(
+                "Meta-Validation Failed: JavaScript tasks must include a \
+                 'jest_vitest_result' check. \
+                 (If this is a non-code change, provide 'bypass_meta_validation_reason')"
+                    .into(),
+            );
+        }
+    } else if lower_lang.contains("typescript") || lower_lang == "ts" {
+        let has_type_check = checks
+            .iter()
+            .any(|c| matches!(c.check_type, CheckType::TypescriptTypeCheck { .. }));
+        let has_tests = checks
+            .iter()
+            .any(|c| matches!(c.check_type, CheckType::JestVitestResult { .. }));
+        if !has_type_check || !has_tests {
+            errors.push(
+                "Meta-Validation Failed: TypeScript tasks must include both a \
+                 'typescript_type_check' AND a 'jest_vitest_result' check. \
+                 (If this is a non-code change, provide 'bypass_meta_validation_reason')"
+                    .into(),
+            );
+        }
+    }
+
+    errors
+}
+
 // ── Dry-Run Validation ──────────────────────────────────────────────
 fn dry_run_validate(checks: &[Check]) -> Vec<String> {
     let mut errors = Vec::new();
@@ -1654,5 +1644,85 @@ mod tests {
         let errors = dry_run_validate(&checks);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("unbalanced brackets"));
+    }
+    #[test]
+    fn test_meta_validate_python() {
+        let no_checks: Vec<Check> = vec![];
+        let errors = meta_validate("python", &no_checks);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("Python tasks must include"));
+
+        let with_checks = vec![
+            Check {
+                name: "type".into(),
+                severity: Severity::Error,
+                check_type: CheckType::PythonTypeCheck {
+                    paths: vec![".".into()],
+                    checker: "mypy".into(),
+                    extra_args: vec![],
+                    working_dir: None,
+                    timeout_secs: 30,
+                }
+            },
+            Check {
+                name: "test".into(),
+                severity: Severity::Error,
+                check_type: CheckType::PytestResult {
+                    test_path: ".".into(),
+                    min_passed: Some(1),
+                    max_failures: Some(0),
+                    max_skipped: None,
+                    working_dir: None,
+                    timeout_secs: 30,
+                }
+            },
+        ];
+        let errors = meta_validate("python", &with_checks);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_meta_validate_rust() {
+        let no_checks: Vec<Check> = vec![];
+        let errors = meta_validate("rust", &no_checks);
+        assert_eq!(errors.len(), 1);
+
+        let with_checks = vec![
+            Check {
+                name: "test".into(),
+                severity: Severity::Error,
+                check_type: CheckType::CommandSucceeds {
+                    command: "cargo test".into(),
+                    working_dir: None,
+                    timeout_secs: 30,
+                    sandbox: None,
+                }
+            },
+        ];
+        let errors = meta_validate("rust", &with_checks);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_meta_validate_html_css() {
+        let no_checks: Vec<Check> = vec![];
+        let errors = meta_validate("html", &no_checks);
+        assert!(errors.is_empty());
+
+        let errors = meta_validate("css", &no_checks);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_meta_validate_js_ts() {
+        let no_checks: Vec<Check> = vec![];
+        let errors = meta_validate("javascript", &no_checks);
+        assert_eq!(errors.len(), 1);
+
+        let errors = meta_validate("js", &no_checks);
+        assert_eq!(errors.len(), 1);
+
+        let errors = meta_validate("typescript", &no_checks);
+        assert_eq!(errors.len(), 1);
     }
 }
