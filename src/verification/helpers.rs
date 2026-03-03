@@ -2,6 +2,7 @@ use crate::contract::CheckStatus;
 use crate::verification::RawResult;
 use regex::Regex;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 pub(crate) fn resolve_path(path: &str, working_dir: Option<&str>) -> PathBuf {
     match (working_dir, Path::new(path).is_absolute()) {
@@ -54,16 +55,17 @@ pub(crate) fn shell_escape(s: &str) -> String {
 /// Extract the number immediately before a keyword in a string.
 /// E.g., "5 passed" → Some(5), "12 failed" → Some(12)
 pub(crate) fn extract_before_keyword(text: &str, keyword: &str) -> Option<usize> {
-    let re = Regex::new(&format!(r"(\d+)\s+{keyword}")).ok()?;
-    re.captures(text)
+    static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d+)\s+([a-zA-Z]+)").unwrap());
+    RE.captures_iter(text)
+        .find(|c| c.get(2).map_or(false, |m| m.as_str() == keyword))
         .and_then(|c| c.get(1))
         .and_then(|m| m.as_str().parse().ok())
 }
 
 /// Extract first number from a string.
 pub(crate) fn extract_first_number(text: &str) -> Option<usize> {
-    let re = Regex::new(r"(\d+)").ok()?;
-    re.captures(text)
+    static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d+)").unwrap());
+    RE.captures(text)
         .and_then(|c| c.get(1))
         .and_then(|m| m.as_str().parse().ok())
 }

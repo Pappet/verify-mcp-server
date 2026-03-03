@@ -3,6 +3,11 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::LazyLock;
+
+static TEMPLATE_VAR_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\{\{([^}:]+)(?::([^}]+))?\}\}").unwrap()
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TemplateVariables {
@@ -105,7 +110,7 @@ pub fn instantiate_template(
 
 fn substitute_variables(val: &mut Value, variables: &HashMap<String, String>) {
     // Regex to find {{var}} or {{var:default}}
-    let re = Regex::new(r"\{\{([^}:]+)(?::([^}]+))?\}\}").unwrap();
+    let re = &*TEMPLATE_VAR_RE;
 
     match val {
         Value::String(s) => {
