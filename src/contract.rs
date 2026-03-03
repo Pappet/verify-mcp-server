@@ -257,6 +257,31 @@ pub enum CheckType {
     },
 }
 
+impl CheckType {
+    /// Extracts the working directory from the check type, if applicable.
+    pub fn working_dir(&self) -> Option<&str> {
+        match self {
+            Self::CommandSucceeds { working_dir, .. } => working_dir.as_deref(),
+            Self::CommandOutputMatches { working_dir, .. } => working_dir.as_deref(),
+            Self::FileExists { working_dir, .. } => working_dir.as_deref(),
+            Self::FileContainsPatterns { working_dir, .. } => working_dir.as_deref(),
+            Self::FileExcludesPatterns { working_dir, .. } => working_dir.as_deref(),
+            Self::AstQuery { working_dir, .. } => working_dir.as_deref(),
+            Self::JsonSchemaValid { .. } => None,
+            Self::ValueInRange { .. } => None,
+            Self::DiffSizeLimit { .. } => None,
+            Self::Assertion { .. } => None,
+            Self::PythonTypeCheck { working_dir, .. } => working_dir.as_deref(),
+            Self::PytestResult { working_dir, .. } => working_dir.as_deref(),
+            Self::PythonImportGraph { working_dir, .. } => working_dir.as_deref(),
+            Self::JsonRegistryConsistency { working_dir, .. } => working_dir.as_deref(),
+            Self::TypescriptTypeCheck { working_dir, .. } => working_dir.as_deref(),
+            Self::JestVitestResult { working_dir, .. } => working_dir.as_deref(),
+            Self::CssHtmlConsistency { working_dir, .. } => working_dir.as_deref(),
+        }
+    }
+}
+
 fn default_timeout() -> u64 {
     30
 }
