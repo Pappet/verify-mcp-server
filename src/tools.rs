@@ -379,6 +379,33 @@ pub async fn handle_tool_call(name: &str, args: &Value, store: &Storage) -> Tool
     }
 }
 
+async fn reject_contract(
+    store: &Storage,
+    description: &str,
+    task: &str,
+    agent_id: &str,
+    language: &str,
+    raw_checks_json: &str,
+    error_message: String,
+) -> ToolResult {
+    let rejected_id = uuid::Uuid::new_v4().to_string();
+    if let Err(store_err) = store
+        .create_rejected_contract(
+            &rejected_id,
+            description,
+            task,
+            agent_id,
+            language,
+            raw_checks_json,
+            &error_message,
+        )
+        .await
+    {
+        tracing::warn!("Failed to store rejected contract: {store_err}");
+    }
+    ToolResult::error(error_message)
+}
+
 // ── Tool Handlers ───────────────────────────────────────────────────
 
 async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
@@ -458,23 +485,16 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
                 .join("\n\n")
         );
 
-        // Store the rejected contract for audit
-        let rejected_id = uuid::Uuid::new_v4().to_string();
-        if let Err(store_err) = store
-            .create_rejected_contract(
-                &rejected_id,
-                &description,
-                &task,
-                &agent_id,
-                &language,
-                &raw_checks_json,
-                &combined_msg,
-            )
-            .await
-        {
-            tracing::warn!("Failed to store rejected contract: {store_err}");
-        }
-        return ToolResult::error(combined_msg);
+        return reject_contract(
+            store,
+            &description,
+            &task,
+            &agent_id,
+            &language,
+            &raw_checks_json,
+            combined_msg,
+        )
+        .await;
     }
 
     // ── Phase 3.5: DRY-RUN VALIDATION ─────────────
@@ -497,23 +517,16 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
                 .join("\n\n")
         );
 
-        // Store the rejected contract for audit
-        let rejected_id = uuid::Uuid::new_v4().to_string();
-        if let Err(store_err) = store
-            .create_rejected_contract(
-                &rejected_id,
-                &description,
-                &task,
-                &agent_id,
-                &language,
-                &raw_checks_json,
-                &combined_msg,
-            )
-            .await
-        {
-            tracing::warn!("Failed to store rejected contract: {store_err}");
-        }
-        return ToolResult::error(combined_msg);
+        return reject_contract(
+            store,
+            &description,
+            &task,
+            &agent_id,
+            &language,
+            &raw_checks_json,
+            combined_msg,
+        )
+        .await;
     }
 
     let id = uuid::Uuid::new_v4().to_string();
@@ -542,6 +555,26 @@ async fn handle_create_contract(args: &Value, store: &Storage) -> ToolResult {
     }))
 }
 
+fn infer_workspace_dir(contract: &Contract) -> String {
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+
+    for check in &contract.checks {
+        if let Some(dir) = check.check_type.working_dir() {
+            *counts.entry(dir).or_insert(0) += 1;
+        }
+    }
+
+    if counts.is_empty() {
+        return ".".to_string();
+    }
+
+    counts
+        .into_iter()
+        .max_by_key(|&(_, count)| count)
+        .map(|(dir, _)| dir.to_string())
+        .unwrap_or_else(|| ".".to_string())
+}
+
 async fn handle_run_contract(args: &Value, store: &Storage) -> ToolResult {
     let contract_id = match args.get("contract_id").and_then(|v| v.as_str()) {
         Some(id) => id,
@@ -562,7 +595,8 @@ async fn handle_run_contract(args: &Value, store: &Storage) -> ToolResult {
 
     let results = verification::run_contract(&contract, input).await;
     let status = verification::determine_status(&results);
-    let new_workspace_hash = verification::compute_workspace_hash(".");
+    let workspace_dir = infer_workspace_dir(&contract);
+    let new_workspace_hash = verification::compute_workspace_hash(&workspace_dir);
 
     if let Err(e) = store
         .update_results(
@@ -1724,5 +1758,126 @@ mod tests {
 
         let errors = meta_validate("typescript", &no_checks);
         assert_eq!(errors.len(), 1);
+    }
+
+    #[test]
+    fn test_infer_workspace_dir() {
+        // Contract without working_dir -> "."
+        let no_dir_contract = Contract {
+            id: "1".into(),
+            description: "".into(),
+            task: "".into(),
+            agent_id: "".into(),
+            language: "".into(),
+            created_at: chrono::Utc::now(),
+            status: ContractStatus::Pending,
+            results: vec![],
+            workspace_hash: None,
+            checks: vec![
+                Check {
+                    name: "c1".into(),
+                    severity: Severity::Error,
+                    check_type: CheckType::CommandSucceeds {
+                        command: "echo".into(),
+                        working_dir: None,
+                        timeout_secs: 10,
+                        sandbox: None,
+                    }
+                }
+            ],
+        };
+        assert_eq!(super::infer_workspace_dir(&no_dir_contract), ".");
+
+        // Contract with 3 checks, all working_dir: "/project" -> "/project"
+        let all_project_contract = Contract {
+            id: "2".into(),
+            description: "".into(),
+            task: "".into(),
+            agent_id: "".into(),
+            language: "".into(),
+            created_at: chrono::Utc::now(),
+            status: ContractStatus::Pending,
+            results: vec![],
+            workspace_hash: None,
+            checks: vec![
+                Check {
+                    name: "c1".into(),
+                    severity: Severity::Error,
+                    check_type: CheckType::CommandSucceeds {
+                        command: "echo".into(),
+                        working_dir: Some("/project".into()),
+                        timeout_secs: 10,
+                        sandbox: None,
+                    }
+                },
+                Check {
+                    name: "c2".into(),
+                    severity: Severity::Error,
+                    check_type: CheckType::CommandSucceeds {
+                        command: "echo".into(),
+                        working_dir: Some("/project".into()),
+                        timeout_secs: 10,
+                        sandbox: None,
+                    }
+                },
+                Check {
+                    name: "c3".into(),
+                    severity: Severity::Error,
+                    check_type: CheckType::CommandSucceeds {
+                        command: "echo".into(),
+                        working_dir: Some("/project".into()),
+                        timeout_secs: 10,
+                        sandbox: None,
+                    }
+                },
+            ],
+        };
+        assert_eq!(super::infer_workspace_dir(&all_project_contract), "/project");
+
+        // Contract with mixed working_dir -> highest frequency wins
+        let mixed_contract = Contract {
+            id: "3".into(),
+            description: "".into(),
+            task: "".into(),
+            agent_id: "".into(),
+            language: "".into(),
+            created_at: chrono::Utc::now(),
+            status: ContractStatus::Pending,
+            results: vec![],
+            workspace_hash: None,
+            checks: vec![
+                Check {
+                    name: "c1".into(),
+                    severity: Severity::Error,
+                    check_type: CheckType::CommandSucceeds {
+                        command: "echo".into(),
+                        working_dir: Some("/other".into()),
+                        timeout_secs: 10,
+                        sandbox: None,
+                    }
+                },
+                Check {
+                    name: "c2".into(),
+                    severity: Severity::Error,
+                    check_type: CheckType::CommandSucceeds {
+                        command: "echo".into(),
+                        working_dir: Some("/project".into()),
+                        timeout_secs: 10,
+                        sandbox: None,
+                    }
+                },
+                Check {
+                    name: "c3".into(),
+                    severity: Severity::Error,
+                    check_type: CheckType::CommandSucceeds {
+                        command: "echo".into(),
+                        working_dir: Some("/project".into()),
+                        timeout_secs: 10,
+                        sandbox: None,
+                    }
+                },
+            ],
+        };
+        assert_eq!(super::infer_workspace_dir(&mixed_contract), "/project");
     }
 }
