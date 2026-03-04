@@ -86,7 +86,7 @@ pub(crate) async fn run_command_succeeds(
                     CheckStatus::Failed
                 },
                 message: if passed {
-                    format!("Command succeeded (exit code 0)")
+                    "Command succeeded (exit code 0)".to_string()
                 } else {
                     format!("Command failed with exit code {code}")
                 },

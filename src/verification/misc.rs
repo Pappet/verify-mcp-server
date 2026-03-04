@@ -28,8 +28,8 @@ pub(crate) fn check_value_in_range(
         }
     };
 
-    let above_min = min.map_or(true, |m| value >= m);
-    let below_max = max.map_or(true, |m| value <= m);
+    let above_min = min.is_none_or(|m| value >= m);
+    let below_max = max.is_none_or(|m| value <= m);
     let passed = above_min && below_max;
 
     let range_str = match (min, max) {
@@ -80,8 +80,8 @@ pub(crate) fn check_diff_size(
         }
     }
 
-    let add_ok = max_additions.map_or(true, |m| additions <= m);
-    let del_ok = max_deletions.map_or(true, |m| deletions <= m);
+    let add_ok = max_additions.is_none_or(|m| additions <= m);
+    let del_ok = max_deletions.is_none_or(|m| deletions <= m);
     let passed = add_ok && del_ok;
 
     let mut issues = Vec::new();

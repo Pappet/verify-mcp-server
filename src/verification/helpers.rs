@@ -19,10 +19,9 @@ pub(crate) fn add_working_dir_hint_if_needed(
     if working_dir.is_none()
         && !Path::new(path).is_absolute()
         && result.status == CheckStatus::Failed
-    {
-        if result.message.contains("No such file")
+        && (result.message.contains("No such file")
             || result.message.contains("NOT found")
-            || result.message.contains("Cannot read file")
+            || result.message.contains("Cannot read file"))
         {
             let hint = format!(
                 "\n\n💡 HINT: The file path '{path}' appears to be relative, but no 'working_dir' \
@@ -36,7 +35,6 @@ Add 'working_dir' to this check to specify the project root:\n\n\
                 result.details = Some(hint);
             }
         }
-    }
 }
 
 pub(crate) fn truncate(s: &str, max_len: usize) -> String {
@@ -57,7 +55,7 @@ pub(crate) fn shell_escape(s: &str) -> String {
 pub(crate) fn extract_before_keyword(text: &str, keyword: &str) -> Option<usize> {
     static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d+)\s+([a-zA-Z]+)").unwrap());
     RE.captures_iter(text)
-        .find(|c| c.get(2).map_or(false, |m| m.as_str() == keyword))
+        .find(|c| c.get(2).is_some_and(|m| m.as_str() == keyword))
         .and_then(|c| c.get(1))
         .and_then(|m| m.as_str().parse().ok())
 }

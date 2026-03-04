@@ -238,7 +238,7 @@ pub(crate) fn check_css_html_consistency(
     let mut css_classes = std::collections::HashSet::new();
     let mut matches = cursor.matches(&query, css_tree.root_node(), css_content.as_bytes());
     while let Some(m) = matches.next() {
-        if let Some(capture) = m.captures.get(0) {
+        if let Some(capture) = m.captures.first() {
             if let Ok(name) = capture.node.utf8_text(css_content.as_bytes()) {
                 css_classes.insert(name.to_string());
             }

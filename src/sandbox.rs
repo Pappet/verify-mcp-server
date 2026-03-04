@@ -350,12 +350,7 @@ pub fn validate_command(command: &str, internal: bool) -> CommandPolicy {
 
 /// Find the first dangerous pattern in an (already unquoted) command string.
 fn find_dangerous_pattern(unquoted_command: &str) -> Option<&'static str> {
-    for pattern in DANGEROUS_PATTERNS {
-        if unquoted_command.contains(pattern) {
-            return Some(pattern);
-        }
-    }
-    None
+    DANGEROUS_PATTERNS.iter().find(|&pattern| unquoted_command.contains(pattern)).map(|v| v as _)
 }
 
 /// Generate a helpful suggestion when a command is blocked.
