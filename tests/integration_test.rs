@@ -248,8 +248,71 @@ async fn test_json_rpc_integration() {
     assert_eq!(ping_resp["id"], 6);
     assert_eq!(ping_resp["result"], json!({}));
 
+    // 8. verify_quick_check
+    send_msg(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {
+                "name": "verify_quick_check",
+                "arguments": {
+                    "check": {
+                        "name": "dummy_quick",
+                        "check_type": {
+                            "type": "command_succeeds",
+                            "command": "echo quick",
+                            "working_dir": "."
+                        }
+                    }
+                }
+            }
+        }),
+    )
+    .await;
+
+    let quick_resp = recv_msg(&mut reader).await;
+    assert_eq!(quick_resp["id"], 7);
+
+    // 9. verify_get_audit_trail
+    send_msg(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "tools/call",
+            "params": {
+                "name": "verify_get_audit_trail",
+                "arguments": {
+                    "contract_id": "quick-check",
+                    "limit": 10
+                }
+            }
+        }),
+    )
+    .await;
+
+    let audit_resp = recv_msg(&mut reader).await;
+    assert_eq!(audit_resp["id"], 8);
+    let acontent = audit_resp["result"]["content"]
+        .as_array()
+        .expect("Expected content array");
+    let atext = acontent[0]["text"].as_str().unwrap();
+    
+    let audit_events: serde_json::Value = serde_json::from_str(atext).unwrap();
+    let events = audit_events["audit_events"]
+        .as_array()
+        .expect("Expected audit_events array");
+    
+    assert!(
+        events.iter().any(|e| e["event_type"] == "quick_check_run"),
+        "Audit events must contain quick_check_run. Got: {:?}",
+        events
+    );
+
     // Fehler-Pfade:
-    // 8. Ungültiges JSON -> Parse-Error Response (-32700)
+    // 10. Ungültiges JSON -> Parse-Error Response (-32700)
     let bad_json_str = "{invalid json\n".as_bytes();
     stdin.write_all(bad_json_str).await.unwrap();
     stdin.flush().await.unwrap();
@@ -260,30 +323,30 @@ async fn test_json_rpc_integration() {
         "Expected parse error code -32700"
     );
 
-    // 9. Unbekannte Methode -> Method Not Found (-32601)
+    // 11. Unbekannte Methode -> Method Not Found (-32601)
     send_msg(
         &mut stdin,
         json!({
             "jsonrpc": "2.0",
-            "id": 8,
+            "id": 11,
             "method": "unknown/method"
         }),
     )
     .await;
 
     let unk_resp = recv_msg(&mut reader).await;
-    assert_eq!(unk_resp["id"], 8);
+    assert_eq!(unk_resp["id"], 11);
     assert_eq!(
         unk_resp["error"]["code"], -32601,
         "Expected method not found code -32601"
     );
 
-    // 10. tools/call ohne name -> Invalid Params (-32602)
+    // 12. tools/call ohne name -> Invalid Params (-32602)
     send_msg(
         &mut stdin,
         json!({
             "jsonrpc": "2.0",
-            "id": 9,
+            "id": 12,
             "method": "tools/call",
             "params": {
                 // Missing name here
@@ -294,7 +357,7 @@ async fn test_json_rpc_integration() {
     .await;
 
     let invalid_resp = recv_msg(&mut reader).await;
-    assert_eq!(invalid_resp["id"], 9);
+    assert_eq!(invalid_resp["id"], 12);
     assert_eq!(
         invalid_resp["error"]["code"], -32602,
         "Expected invalid params code -32602"
