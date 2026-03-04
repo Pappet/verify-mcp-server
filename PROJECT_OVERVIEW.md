@@ -15,6 +15,7 @@ A **Rust-based MCP (Model Context Protocol) server** that provides **contract-ba
 | **License** | MIT |
 | **Tests** | ✅ 40 passing unit tests |
 | **Build** | ✅ Compiles cleanly |
+| **CI/CD** | GitHub Actions (Test, Lint, Fmt) & Release Drafter |
 | **Binary** | `target/release/verify-mcp-server` |
 | **Persistence** | SQLite at `~/.local/share/verify-mcp/verify.db` |
 | **MCP Tools** | 12 tools exposed |
