@@ -1,14 +1,14 @@
 //! Verification engine: executes contract checks and produces results.
 
+pub(crate) mod ast;
 pub(crate) mod command;
 pub(crate) mod file;
-pub(crate) mod python;
-pub(crate) mod ast;
+pub(crate) mod helpers;
 pub(crate) mod json;
 pub(crate) mod misc;
-pub(crate) mod helpers;
-pub(crate) mod workspace;
+pub(crate) mod python;
 pub(crate) mod web;
+pub(crate) mod workspace;
 
 use crate::contract::*;
 use std::time::Instant;
@@ -81,7 +81,10 @@ async fn run_check(check: &Check, input: Option<&str>, ast_cache: &mut AstCache)
             working_dir,
             timeout_secs,
             sandbox,
-        } => command::run_command_succeeds(command, working_dir.as_deref(), *timeout_secs, *sandbox).await,
+        } => {
+            command::run_command_succeeds(command, working_dir.as_deref(), *timeout_secs, *sandbox)
+                .await
+        }
 
         CheckType::CommandOutputMatches {
             command,
@@ -216,9 +219,7 @@ async fn run_check(check: &Check, input: Option<&str>, ast_cache: &mut AstCache)
             paths,
             working_dir,
             timeout_secs,
-        } => {
-            web::check_typescript_type_check(paths, working_dir.as_deref(), *timeout_secs).await
-        }
+        } => web::check_typescript_type_check(paths, working_dir.as_deref(), *timeout_secs).await,
 
         CheckType::JestVitestResult {
             test_path,

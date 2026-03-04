@@ -5,9 +5,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-static TEMPLATE_VAR_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\{\{([^}:]+)(?::([^}]+))?\}\}").unwrap()
-});
+static TEMPLATE_VAR_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\{\{([^}:]+)(?::([^}]+))?\}\}").unwrap());
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TemplateVariables {

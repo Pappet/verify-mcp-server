@@ -1,6 +1,6 @@
+use crate::contract::CheckStatus;
 use crate::sandbox::{self, CommandPolicy, SandboxConfig};
 use crate::verification::helpers::truncate;
-use crate::contract::CheckStatus;
 use crate::verification::RawResult;
 use regex::Regex;
 use tokio::process::Command;

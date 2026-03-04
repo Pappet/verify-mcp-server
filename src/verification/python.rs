@@ -1,6 +1,8 @@
 use crate::contract::{ArchitectureRule, CheckStatus};
 use crate::verification::command::execute_command;
-use crate::verification::helpers::{extract_before_keyword, extract_first_number, shell_escape, truncate};
+use crate::verification::helpers::{
+    extract_before_keyword, extract_first_number, shell_escape, truncate,
+};
 use crate::verification::RawResult;
 use regex::Regex;
 

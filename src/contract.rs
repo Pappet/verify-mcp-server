@@ -218,7 +218,6 @@ pub enum CheckType {
     },
 
     // ── JS/TS/HTML-Specific Checks ──────────────────────────────
-    
     /// Run tsc --noEmit and parse structured results.
     TypescriptTypeCheck {
         /// Files or directories to check, usually the tsconfig path or just "."

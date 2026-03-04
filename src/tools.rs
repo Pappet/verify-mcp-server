@@ -1696,7 +1696,7 @@ mod tests {
                     extra_args: vec![],
                     working_dir: None,
                     timeout_secs: 30,
-                }
+                },
             },
             Check {
                 name: "test".into(),
@@ -1708,7 +1708,7 @@ mod tests {
                     max_skipped: None,
                     working_dir: None,
                     timeout_secs: 30,
-                }
+                },
             },
         ];
         let errors = meta_validate("python", &with_checks);
@@ -1721,18 +1721,16 @@ mod tests {
         let errors = meta_validate("rust", &no_checks);
         assert_eq!(errors.len(), 1);
 
-        let with_checks = vec![
-            Check {
-                name: "test".into(),
-                severity: Severity::Error,
-                check_type: CheckType::CommandSucceeds {
-                    command: "cargo test".into(),
-                    working_dir: None,
-                    timeout_secs: 30,
-                    sandbox: None,
-                }
+        let with_checks = vec![Check {
+            name: "test".into(),
+            severity: Severity::Error,
+            check_type: CheckType::CommandSucceeds {
+                command: "cargo test".into(),
+                working_dir: None,
+                timeout_secs: 30,
+                sandbox: None,
             },
-        ];
+        }];
         let errors = meta_validate("rust", &with_checks);
         assert!(errors.is_empty());
     }
@@ -1773,18 +1771,16 @@ mod tests {
             status: ContractStatus::Pending,
             results: vec![],
             workspace_hash: None,
-            checks: vec![
-                Check {
-                    name: "c1".into(),
-                    severity: Severity::Error,
-                    check_type: CheckType::CommandSucceeds {
-                        command: "echo".into(),
-                        working_dir: None,
-                        timeout_secs: 10,
-                        sandbox: None,
-                    }
-                }
-            ],
+            checks: vec![Check {
+                name: "c1".into(),
+                severity: Severity::Error,
+                check_type: CheckType::CommandSucceeds {
+                    command: "echo".into(),
+                    working_dir: None,
+                    timeout_secs: 10,
+                    sandbox: None,
+                },
+            }],
         };
         assert_eq!(super::infer_workspace_dir(&no_dir_contract), ".");
 
@@ -1808,7 +1804,7 @@ mod tests {
                         working_dir: Some("/project".into()),
                         timeout_secs: 10,
                         sandbox: None,
-                    }
+                    },
                 },
                 Check {
                     name: "c2".into(),
@@ -1818,7 +1814,7 @@ mod tests {
                         working_dir: Some("/project".into()),
                         timeout_secs: 10,
                         sandbox: None,
-                    }
+                    },
                 },
                 Check {
                     name: "c3".into(),
@@ -1828,11 +1824,14 @@ mod tests {
                         working_dir: Some("/project".into()),
                         timeout_secs: 10,
                         sandbox: None,
-                    }
+                    },
                 },
             ],
         };
-        assert_eq!(super::infer_workspace_dir(&all_project_contract), "/project");
+        assert_eq!(
+            super::infer_workspace_dir(&all_project_contract),
+            "/project"
+        );
 
         // Contract with mixed working_dir -> highest frequency wins
         let mixed_contract = Contract {
@@ -1854,7 +1853,7 @@ mod tests {
                         working_dir: Some("/other".into()),
                         timeout_secs: 10,
                         sandbox: None,
-                    }
+                    },
                 },
                 Check {
                     name: "c2".into(),
@@ -1864,7 +1863,7 @@ mod tests {
                         working_dir: Some("/project".into()),
                         timeout_secs: 10,
                         sandbox: None,
-                    }
+                    },
                 },
                 Check {
                     name: "c3".into(),
@@ -1874,7 +1873,7 @@ mod tests {
                         working_dir: Some("/project".into()),
                         timeout_secs: 10,
                         sandbox: None,
-                    }
+                    },
                 },
             ],
         };

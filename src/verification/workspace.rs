@@ -54,7 +54,11 @@ mod tests {
     // Helper to create a temp dir with a unique name
     fn create_temp_dir(name: &str) -> std::path::PathBuf {
         let mut path = env::temp_dir();
-        path.push(format!("verify_mcp_workspace_test_{}_{}", name, std::process::id()));
+        path.push(format!(
+            "verify_mcp_workspace_test_{}_{}",
+            name,
+            std::process::id()
+        ));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
         path
@@ -63,13 +67,22 @@ mod tests {
     #[test]
     fn test_workspace_hash_deterministic() {
         let dir = create_temp_dir("deterministic");
-        File::create(dir.join("file1.txt")).unwrap().write_all(b"hello").unwrap();
-        File::create(dir.join("file2.txt")).unwrap().write_all(b"world").unwrap();
+        File::create(dir.join("file1.txt"))
+            .unwrap()
+            .write_all(b"hello")
+            .unwrap();
+        File::create(dir.join("file2.txt"))
+            .unwrap()
+            .write_all(b"world")
+            .unwrap();
 
         let hash1 = compute_workspace_hash(dir.to_str().unwrap());
         let hash2 = compute_workspace_hash(dir.to_str().unwrap());
 
-        assert_eq!(hash1, hash2, "Hashing the same directory twice should yield the same result");
+        assert_eq!(
+            hash1, hash2,
+            "Hashing the same directory twice should yield the same result"
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -77,11 +90,17 @@ mod tests {
     fn test_workspace_hash_changes_on_content_change() {
         let dir = create_temp_dir("content_change");
         let file_path = dir.join("file.txt");
-        File::create(&file_path).unwrap().write_all(b"version1").unwrap();
+        File::create(&file_path)
+            .unwrap()
+            .write_all(b"version1")
+            .unwrap();
 
         let hash1 = compute_workspace_hash(dir.to_str().unwrap());
 
-        File::create(&file_path).unwrap().write_all(b"version2").unwrap();
+        File::create(&file_path)
+            .unwrap()
+            .write_all(b"version2")
+            .unwrap();
         let hash2 = compute_workspace_hash(dir.to_str().unwrap());
 
         assert_ne!(hash1, hash2, "Hash should change when file content changes");
@@ -93,7 +112,10 @@ mod tests {
         let dir = create_temp_dir("rename");
         let file1_path = dir.join("file1.txt");
         let file2_path = dir.join("file2.txt");
-        File::create(&file1_path).unwrap().write_all(b"content").unwrap();
+        File::create(&file1_path)
+            .unwrap()
+            .write_all(b"content")
+            .unwrap();
 
         let hash1 = compute_workspace_hash(dir.to_str().unwrap());
 
@@ -117,17 +139,29 @@ mod tests {
         assert!(status.success(), "git init failed");
 
         // Create a tracked file
-        File::create(dir.join("tracked.txt")).unwrap().write_all(b"tracked").unwrap();
+        File::create(dir.join("tracked.txt"))
+            .unwrap()
+            .write_all(b"tracked")
+            .unwrap();
         // Create .gitignore
-        File::create(dir.join(".gitignore")).unwrap().write_all(b"ignored.txt\n").unwrap();
+        File::create(dir.join(".gitignore"))
+            .unwrap()
+            .write_all(b"ignored.txt\n")
+            .unwrap();
 
         let hash1 = compute_workspace_hash(dir.to_str().unwrap());
 
         // Create ignored file
-        File::create(dir.join("ignored.txt")).unwrap().write_all(b"ignored").unwrap();
+        File::create(dir.join("ignored.txt"))
+            .unwrap()
+            .write_all(b"ignored")
+            .unwrap();
         let hash2 = compute_workspace_hash(dir.to_str().unwrap());
 
-        assert_eq!(hash1, hash2, "Hash should be the same even if an ignored file is added");
+        assert_eq!(
+            hash1, hash2,
+            "Hash should be the same even if an ignored file is added"
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -135,9 +169,12 @@ mod tests {
     fn test_workspace_hash_empty_dir() {
         let dir = create_temp_dir("empty");
         let hash = compute_workspace_hash(dir.to_str().unwrap());
-        
+
         // It should return a valid hash for an empty directory.
-        assert!(hash.ends_with("_0"), "Hash of empty directory should end with _0");
+        assert!(
+            hash.ends_with("_0"),
+            "Hash of empty directory should end with _0"
+        );
         let _ = fs::remove_dir_all(dir);
     }
 }

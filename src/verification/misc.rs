@@ -1,7 +1,11 @@
 use crate::contract::CheckStatus;
 use crate::verification::RawResult;
 
-pub(crate) fn check_value_in_range(input: Option<&str>, min: Option<f64>, max: Option<f64>) -> RawResult {
+pub(crate) fn check_value_in_range(
+    input: Option<&str>,
+    min: Option<f64>,
+    max: Option<f64>,
+) -> RawResult {
     let input = match input {
         Some(i) => i,
         None => {

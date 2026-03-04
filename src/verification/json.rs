@@ -238,7 +238,11 @@ pub(crate) fn check_json_registry_consistency(
 }
 
 /// Recursively extract all string values for a given field name from JSON.
-pub(crate) fn extract_field_values(value: &serde_json::Value, field: &str, results: &mut Vec<String>) {
+pub(crate) fn extract_field_values(
+    value: &serde_json::Value,
+    field: &str,
+    results: &mut Vec<String>,
+) {
     match value {
         serde_json::Value::Object(map) => {
             for (key, val) in map {

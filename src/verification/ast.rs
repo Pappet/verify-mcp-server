@@ -12,21 +12,23 @@ pub(crate) async fn run_ast_query(
     ast_cache: &mut AstCache,
 ) -> RawResult {
     // 1. Resolve Language
-    let language = match language_str.to_lowercase().as_str() {
-        "python" => tree_sitter_python::LANGUAGE.into(),
-        "javascript" | "js" => tree_sitter_javascript::LANGUAGE.into(),
-        "typescript" | "ts" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-        "tsx" => tree_sitter_typescript::LANGUAGE_TSX.into(),
-        "html" => tree_sitter_html::LANGUAGE.into(),
-        "css" => tree_sitter_css::LANGUAGE.into(),
-        _ => {
-            return RawResult {
+    let language =
+        match language_str.to_lowercase().as_str() {
+            "python" => tree_sitter_python::LANGUAGE.into(),
+            "javascript" | "js" => tree_sitter_javascript::LANGUAGE.into(),
+            "typescript" | "ts" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            "tsx" => tree_sitter_typescript::LANGUAGE_TSX.into(),
+            "html" => tree_sitter_html::LANGUAGE.into(),
+            "css" => tree_sitter_css::LANGUAGE.into(),
+            _ => return RawResult {
                 status: CheckStatus::Failed,
                 message: format!("Unsupported language for AstQuery: {language_str}"),
-                details: Some("Currently supported languages: python, javascript, typescript, tsx, html, css".into()),
-            }
-        }
-    };
+                details: Some(
+                    "Currently supported languages: python, javascript, typescript, tsx, html, css"
+                        .into(),
+                ),
+            },
+        };
 
     // 2. Expand Macros or use raw query
     let expanded_query = if query_str.starts_with("macro:") {
@@ -68,7 +70,11 @@ pub(crate) async fn run_ast_query(
                 message: format!("Cannot read file '{path}': {e}"),
                 details: None,
             };
-            crate::verification::helpers::add_working_dir_hint_if_needed(&mut result, path, working_dir);
+            crate::verification::helpers::add_working_dir_hint_if_needed(
+                &mut result,
+                path,
+                working_dir,
+            );
             return result;
         }
     };
@@ -201,31 +207,31 @@ pub(crate) fn expand_ast_macro(macro_str: &str, language: &str) -> Result<String
         }
         ("html", "element_exists") => {
             if args.is_empty() {
-                return Err("element_exists requires an element specifier (e.g., div.my-class)".into());
+                return Err(
+                    "element_exists requires an element specifier (e.g., div.my-class)".into(),
+                );
             }
             let spec = args[0];
             let mut tag = spec;
             let mut attr_query = String::new();
-            
+
             if let Some(idx) = spec.find('.') {
                 tag = &spec[..idx];
-                let class_name = &spec[idx+1..];
+                let class_name = &spec[idx + 1..];
                 attr_query = format!("(attribute (attribute_name) @attr_name (#eq? @attr_name \"class\") (quoted_attribute_value (attribute_value) @attr_val (#match? @attr_val \"(^|\\\\s){class_name}(\\\\s|$)\")))");
             } else if let Some(idx) = spec.find('#') {
                 tag = &spec[..idx];
-                let id_name = &spec[idx+1..];
+                let id_name = &spec[idx + 1..];
                 attr_query = format!("(attribute (attribute_name) @attr_name (#eq? @attr_name \"id\") (quoted_attribute_value (attribute_value) @attr_val (#eq? @attr_val \"{id_name}\")))");
             }
 
-            let tag_match = if tag.is_empty() || tag == "*" || tag == "_" { 
-                "(tag_name) @tag".to_string() 
-            } else { 
-                format!("(tag_name) @tag (#eq? @tag \"{tag}\")") 
+            let tag_match = if tag.is_empty() || tag == "*" || tag == "_" {
+                "(tag_name) @tag".to_string()
+            } else {
+                format!("(tag_name) @tag (#eq? @tag \"{tag}\")")
             };
 
-            Ok(format!(
-                "(element (start_tag {tag_match} {attr_query}))"
-            ))
+            Ok(format!("(element (start_tag {tag_match} {attr_query}))"))
         }
         ("css", "selector_exists") => {
             if args.is_empty() {
@@ -241,9 +247,7 @@ pub(crate) fn expand_ast_macro(macro_str: &str, language: &str) -> Result<String
                     "(id_selector (id_name) @name (#eq? @name \"{id_name}\"))"
                 ))
             } else {
-                Ok(format!(
-                    "(tag_name) @name (#eq? @name \"{selector}\")"
-                ))
+                Ok(format!("(tag_name) @name (#eq? @name \"{selector}\")"))
             }
         }
         _ => Err(format!(
