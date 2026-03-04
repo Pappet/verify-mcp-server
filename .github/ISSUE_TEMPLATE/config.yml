@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Questions & Discussions
+    url: https://github.com/Pappet/verify-mcp-server/discussions
+    about: Ask questions or start a discussion regarding MCP integration or agent workflows (not a bug or feature request)
