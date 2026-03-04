@@ -299,12 +299,12 @@ async fn test_json_rpc_integration() {
         .as_array()
         .expect("Expected content array");
     let atext = acontent[0]["text"].as_str().unwrap();
-    
+
     let audit_events: serde_json::Value = serde_json::from_str(atext).unwrap();
     let events = audit_events["audit_events"]
         .as_array()
         .expect("Expected audit_events array");
-    
+
     assert!(
         events.iter().any(|e| e["event_type"] == "quick_check_run"),
         "Audit events must contain quick_check_run. Got: {:?}",

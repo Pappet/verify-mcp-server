@@ -711,13 +711,16 @@ async fn handle_quick_check(args: &Value, store: &Storage) -> ToolResult {
         CheckStatus::Failed => "failed",
         CheckStatus::Unverified => "unverified",
     };
-    
-    if let Err(e) = store.log_quick_check(
-        &result.check_name,
-        &check_type_json,
-        status_str,
-        result.duration_ms
-    ).await {
+
+    if let Err(e) = store
+        .log_quick_check(
+            &result.check_name,
+            &check_type_json,
+            status_str,
+            result.duration_ms,
+        )
+        .await
+    {
         tracing::warn!("Failed to log quick check: {e}");
     }
 
