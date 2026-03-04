@@ -269,6 +269,7 @@ impl Storage {
     ///
     /// Unlike `create_contract`, this accepts raw JSON for checks (since parsing
     /// may have failed) and stores the contract with status `rejected`.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_rejected_contract(
         &self,
         id: &str,
@@ -434,15 +435,13 @@ impl Storage {
                         .map_err(|e| format!("Query consecutive: {e}"))?;
 
                     let mut recent_failures = 0;
-                    for row in rows {
-                        if let Ok(evt) = row {
-                            if evt == "verification_failed" || evt == "verification_started" {
-                                if evt == "verification_failed" {
-                                    recent_failures += 1;
-                                }
-                            } else {
-                                break;
+                    for evt in rows.flatten() {
+                        if evt == "verification_failed" || evt == "verification_started" {
+                            if evt == "verification_failed" {
+                                recent_failures += 1;
                             }
+                        } else {
+                            break;
                         }
                     }
 
