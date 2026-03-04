@@ -51,7 +51,6 @@ To prevent agents from skipping crucial checks on specific tech stacks, the serv
 - E.g., Python tasks MUST include `python_type_check` AND `pytest_result`.
 - Rust tasks MUST include a `command_succeeds` check running `cargo test`.
 - JS/TS tasks MUST include a `jest_vitest_result` check, and TS additionally needs `typescript_type_check`.
-- HTML/CSS tasks MUST include a test-related `command_succeeds` check.
 - Non-code changes can bypass meta-validation by providing a `bypass_meta_validation_reason`.
 
 ### 5. Multi-Stage Contract Validation
