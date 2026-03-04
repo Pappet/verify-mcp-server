@@ -90,7 +90,7 @@ Define expectations before starting work using `verify_create_contract`:
 }
 ```
 
-> **Note:** `agent_id` and `language` are mandatory. The server enforces language-specific meta-validation — Python tasks must include `python_type_check` and `pytest_result`, Rust tasks must include `cargo test`. Use `bypass_meta_validation_reason` for non-code changes like templates or config edits.
+> **Note:** `agent_id` and `language` are mandatory. The server enforces language-specific meta-validation — Python tasks must include `python_type_check` and `pytest_result`, Rust tasks must include `cargo test`. JavaScript tasks require `jest_vitest_result`, and TypeScript tasks require `typescript_type_check` and `jest_vitest_result`. HTML/CSS tasks have no meta-validation obligations. Use `bypass_meta_validation_reason` for non-code changes like templates or config edits.
 
 Execute the work and verify using `verify_run_contract`. You'll receive a detailed verdict:
 
@@ -187,7 +187,7 @@ Contracts go through multiple validation stages before being accepted:
 
 1. **Check Parsing** — All checks are deserialized with targeted error messages. If a field name is wrong (e.g. `path` vs `paths`), the agent gets a specific hint showing exactly which fields are required, with a copy-paste example.
 
-2. **Meta-Validation** — Language-specific minimum standards are enforced (e.g. Python tasks must have type checks and tests, JS tasks must have tests, TS tasks must have type checks and tests). Can be bypassed with `bypass_meta_validation_reason` for non-code changes.
+2. **Meta-Validation** — Language-specific minimum standards are enforced (e.g. Python tasks must have type checks and tests, JS tasks must have tests, TS tasks must have type checks and tests, HTML/CSS tasks have no meta-validation obligations). Can be bypassed with `bypass_meta_validation_reason` for non-code changes.
 
 3. **Dry-Run Validation** — Before a contract is stored, all regex patterns are compiled, working directories are verified, and AST queries are checked for balanced brackets. Invalid contracts are rejected immediately with actionable diagnostics.
 
