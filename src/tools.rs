@@ -365,7 +365,7 @@ pub async fn handle_tool_call(name: &str, args: &Value, store: &Storage) -> Tool
     match name {
         "verify_create_contract" => handle_create_contract(args, store).await,
         "verify_run_contract" => handle_run_contract(args, store).await,
-        "verify_quick_check" => handle_quick_check(args).await,
+        "verify_quick_check" => handle_quick_check(args, store).await,
         "verify_list_contracts" => handle_list_contracts(store).await,
         "verify_get_report" => handle_get_report(args, store).await,
         "verify_delete_contract" => handle_delete_contract(args, store).await,
@@ -675,7 +675,7 @@ async fn handle_run_contract(args: &Value, store: &Storage) -> ToolResult {
     }))
 }
 
-async fn handle_quick_check(args: &Value) -> ToolResult {
+async fn handle_quick_check(args: &Value, store: &Storage) -> ToolResult {
     let check_val = match args.get("check") {
         Some(v) => v,
         None => return ToolResult::error("'check' is required"),
@@ -695,7 +695,7 @@ async fn handle_quick_check(args: &Value) -> ToolResult {
         task: "Quick verification".into(),
         agent_id: "quick-check-agent".into(),
         language: "unknown".into(),
-        checks: vec![check],
+        checks: vec![check.clone()],
         created_at: chrono::Utc::now(),
         status: ContractStatus::Running,
         results: vec![],
@@ -704,6 +704,25 @@ async fn handle_quick_check(args: &Value) -> ToolResult {
 
     let results = verification::run_contract(&contract, input).await;
     let result = &results[0];
+
+    let check_type_json = serde_json::to_string(&check.check_type).unwrap_or_default();
+    let status_str = match result.status {
+        CheckStatus::Passed => "passed",
+        CheckStatus::Failed => "failed",
+        CheckStatus::Unverified => "unverified",
+    };
+
+    if let Err(e) = store
+        .log_quick_check(
+            &result.check_name,
+            &check_type_json,
+            status_str,
+            result.duration_ms,
+        )
+        .await
+    {
+        tracing::warn!("Failed to log quick check: {e}");
+    }
 
     ToolResult::json(&json!({
         "status": result.status,

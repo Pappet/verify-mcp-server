@@ -38,6 +38,7 @@ pub enum AuditEventType {
     VerificationFailed,
     ContractDeleted,
     ContractRejected,
+    QuickCheckRun,
 }
 
 impl AuditEventType {
@@ -49,6 +50,7 @@ impl AuditEventType {
             Self::VerificationFailed => "verification_failed",
             Self::ContractDeleted => "contract_deleted",
             Self::ContractRejected => "contract_rejected",
+            Self::QuickCheckRun => "quick_check_run",
         }
     }
 
@@ -60,6 +62,7 @@ impl AuditEventType {
             "verification_failed" => Self::VerificationFailed,
             "contract_deleted" => Self::ContractDeleted,
             "contract_rejected" => Self::ContractRejected,
+            "quick_check_run" => Self::QuickCheckRun,
             _ => Self::ContractCreated,
         }
     }
@@ -347,6 +350,36 @@ impl Storage {
             params.id,
             AuditEventType::ContractRejected,
             Some(params.rejection_reason),
+        )?;
+        Ok(())
+    }
+
+    /// Log a quick check to the audit trail
+    pub async fn log_quick_check(
+        &self,
+        check_name: &str,
+        check_type_json: &str,
+        status: &str,
+        duration_ms: u64,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().await;
+        // Try parsing the json check_type so it stores as a proper JSON object, fallback to string if invalid
+        let parsed_check_type = serde_json::from_str::<serde_json::Value>(check_type_json)
+            .unwrap_or_else(|_| serde_json::Value::String(check_type_json.to_string()));
+
+        let details = serde_json::json!({
+            "check_name": check_name,
+            "check_type": parsed_check_type,
+            "status": status,
+            "duration_ms": duration_ms
+        })
+        .to_string();
+
+        self.log_event_sync(
+            &conn,
+            "quick-check",
+            AuditEventType::QuickCheckRun,
+            Some(&details),
         )?;
         Ok(())
     }
