@@ -120,6 +120,16 @@ pub struct FailureFrequency {
 
 // ── Persistent Store ────────────────────────────────────────────────
 
+pub struct RejectedContractParams<'a> {
+    pub id: &'a str,
+    pub description: &'a str,
+    pub task: &'a str,
+    pub agent_id: &'a str,
+    pub language: &'a str,
+    pub checks_json: &'a str,
+    pub rejection_reason: &'a str,
+}
+
 /// SQLite-backed contract store with audit trail.
 #[derive(Clone)]
 pub struct Storage {
@@ -269,16 +279,9 @@ impl Storage {
     ///
     /// Unlike `create_contract`, this accepts raw JSON for checks (since parsing
     /// may have failed) and stores the contract with status `rejected`.
-    #[allow(clippy::too_many_arguments)]
     pub async fn create_rejected_contract(
         &self,
-        id: &str,
-        description: &str,
-        task: &str,
-        agent_id: &str,
-        language: &str,
-        checks_json: &str,
-        rejection_reason: &str,
+        params: RejectedContractParams<'_>,
     ) -> Result<(), String> {
         let conn = self.conn.lock().await;
         let now = Utc::now().to_rfc3339();
@@ -287,22 +290,30 @@ impl Storage {
         conn.execute(
             "INSERT INTO agents (id, trust_score) VALUES (?1, 100.0)
              ON CONFLICT(id) DO NOTHING",
-            params![agent_id],
+            params![params.agent_id],
         )
         .map_err(|e| format!("Insert agent: {e}"))?;
 
         conn.execute(
             "INSERT INTO contracts (id, description, task, agent_id, language, checks_json, status, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'rejected', ?7, ?7)",
-            params![id, description, task, agent_id, language, checks_json, now],
+            params![
+                params.id,
+                params.description,
+                params.task,
+                params.agent_id,
+                params.language,
+                params.checks_json,
+                now
+            ],
         )
         .map_err(|e| format!("Insert rejected contract: {e}"))?;
 
         self.log_event_sync(
             &conn,
-            id,
+            params.id,
             AuditEventType::ContractRejected,
-            Some(rejection_reason),
+            Some(params.rejection_reason),
         )?;
         Ok(())
     }

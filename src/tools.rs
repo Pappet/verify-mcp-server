@@ -390,15 +390,15 @@ async fn reject_contract(
 ) -> ToolResult {
     let rejected_id = uuid::Uuid::new_v4().to_string();
     if let Err(store_err) = store
-        .create_rejected_contract(
-            &rejected_id,
+        .create_rejected_contract(crate::storage::RejectedContractParams {
+            id: &rejected_id,
             description,
             task,
             agent_id,
             language,
-            raw_checks_json,
-            &error_message,
-        )
+            checks_json: raw_checks_json,
+            rejection_reason: &error_message,
+        })
         .await
     {
         tracing::warn!("Failed to store rejected contract: {store_err}");
