@@ -22,19 +22,19 @@ pub(crate) fn add_working_dir_hint_if_needed(
         && (result.message.contains("No such file")
             || result.message.contains("NOT found")
             || result.message.contains("Cannot read file"))
-        {
-            let hint = format!(
-                "\n\n💡 HINT: The file path '{path}' appears to be relative, but no 'working_dir' \
+    {
+        let hint = format!(
+            "\n\n💡 HINT: The file path '{path}' appears to be relative, but no 'working_dir' \
 was set. The server resolves paths from its own working directory, not your project. \
 Add 'working_dir' to this check to specify the project root:\n\n\
   \"working_dir\": \"/absolute/path/to/your/project\""
-            );
-            if let Some(details) = &mut result.details {
-                details.push_str(&hint);
-            } else {
-                result.details = Some(hint);
-            }
+        );
+        if let Some(details) = &mut result.details {
+            details.push_str(&hint);
+        } else {
+            result.details = Some(hint);
         }
+    }
 }
 
 pub(crate) fn truncate(s: &str, max_len: usize) -> String {
