@@ -56,7 +56,9 @@ Every contract requires:
 Based on the `language`, minimum checks are enforced:
 - **Python**: Must include `python_type_check` AND `pytest_result`.
 - **Rust**: Must include a `command_succeeds` check running `cargo test`.
-- **JS/TS/Web**: Must include a test-related `command_succeeds` check.
+- **JavaScript**: Must include `jest_vitest_result`.
+- **TypeScript**: Must include `typescript_type_check` AND `jest_vitest_result`.
+- **HTML/CSS**: No meta-validation requirements.
 
 For non-code changes (HTML templates, JSON-only edits, documentation), bypass with:
 ```json

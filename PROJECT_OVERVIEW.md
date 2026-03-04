@@ -13,7 +13,7 @@ A **Rust-based MCP (Model Context Protocol) server** that provides **contract-ba
 | **Language** | Rust (edition 2021) |
 | **Version** | 0.1.0 |
 | **License** | MIT |
-| **Tests** | ✅ 40 passing unit tests |
+| **Tests** | ✅ 56 passing unit tests |
 | **Build** | ✅ Compiles cleanly |
 | **CI/CD** | GitHub Actions (Test, Lint, Fmt) & Release Drafter |
 | **Binary** | `target/release/verify-mcp-server` |
@@ -51,7 +51,9 @@ To prevent agents from skipping crucial checks on specific tech stacks, the serv
 - Meta-validation rules enforce minimum check standards based on the `language`.
 - E.g., Python tasks MUST include `python_type_check` AND `pytest_result`.
 - Rust tasks MUST include a `command_succeeds` check running `cargo test`.
-- JS/TS tasks MUST include a `jest_vitest_result` check, and TS additionally needs `typescript_type_check`.
+- JavaScript tasks MUST include a `jest_vitest_result` check.
+- TypeScript tasks MUST include `typescript_type_check` AND `jest_vitest_result`.
+- HTML/CSS tasks have no meta-validation obligations.
 - Non-code changes can bypass meta-validation by providing a `bypass_meta_validation_reason`.
 
 ### 5. Multi-Stage Contract Validation
@@ -104,18 +106,18 @@ MCP tool definitions and call handlers. Exposes 12 tools for contract lifecycle,
 - Template instantiation and promotion logic.
 - Check type schema documentation for the error hint system.
 
-### [verification.rs](src/verification.rs)
-The verification engine. Implements all 17 check evaluation mechanisms, including:
-- Command evaluations with security-aware dispatch to strict `CheckStatus` results.
-- `AstQuery`: AST-based semantic analysis using `tree-sitter` for Python, JS, TS, HTML, and CSS, with macro expansion (e.g. `macro:function_exists:name`, `macro:react_component_exists:name`).
-- `PythonImportGraph`: Extracts internal import relationships, detects cycles, and verifies against optional architectural rules.
-- `PytestResult`: Structured pytest output parsing with pass/fail/skip thresholds and detailed failure extraction.
-- `PythonTypeCheck`: Structured mypy/pyright output parsing.
-- `TypescriptTypeCheck`: Runs `tsc --noEmit` to validate TypeScript files.
-- `JestVitestResult`: Parses structured Jest/Vitest JSON reports.
-- `CssHtmlConsistency`: Verifies that CSS classes used in HTML files exist in the corresponding CSS code.
-- `JsonRegistryConsistency`: Cross-references JSON data files against Python source registries.
-- Workspace hashing via `ignore` crate (respects `.gitignore`) for flaky-detection support.
+### [src/verification/](src/verification/)
+The verification engine, split into domain-specific modules. Implements all 17 check evaluation mechanisms, including:
+- `mod.rs`: Module exports and high-level routing.
+- `command.rs`: Command evaluations with security-aware dispatch to strict `CheckStatus` results.
+- `file.rs`: File existence and pattern matching checks.
+- `python.rs`: Python-specific checks (`PytestResult`, `PythonTypeCheck`, `PythonImportGraph`).
+- `ast.rs`: `AstQuery` for semantic analysis using `tree-sitter` (Python, JS, TS, HTML, CSS).
+- `json.rs`: `JsonRegistryConsistency` and schema validation.
+- `web.rs`: Web-specific checks (`TypescriptTypeCheck`, `JestVitestResult`, `CssHtmlConsistency`).
+- `misc.rs`: Generic checks like `diff_size_limit`, `value_in_range`, and assertions.
+- `helpers.rs`: Shared utilities for path resolution, output parsing, etc.
+- `workspace.rs`: Workspace hashing via `ignore` crate for flaky-detection support.
 
 ### [sandbox.rs](src/sandbox.rs)
 Implements the 3-tier security policies with quote-aware pattern matching, regex filters to deny destructive behaviors, and Podman container execution. Provides actionable suggestions when commands are blocked (e.g. suggesting `working_dir` instead of `cd && ...`).
