@@ -166,6 +166,30 @@ impl Storage {
             .try_lock()
             .map_err(|e| format!("Lock error: {e}"))?;
 
+        let current_version: u32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(|e| format!("Failed to read user_version: {e}"))?;
+
+        Self::run_migrations(&conn, current_version)?;
+
+        debug!("Database schema initialized");
+        Ok(())
+    }
+
+fn run_migrations(conn: &Connection, mut current_version: u32) -> Result<(), String> {
+    const LATEST_VERSION: u32 = 1;
+
+    if current_version > LATEST_VERSION {
+        tracing::warn!(
+            "Database was created by a newer version (version {}). Known version is {}.",
+            current_version,
+            LATEST_VERSION
+        );
+        return Ok(());
+    }
+
+    if current_version == 0 {
+        // Initial schema creation (version 0 -> 1)
         conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS agents (
@@ -233,11 +257,20 @@ impl Storage {
                 ON contracts(created_at);
             ",
         )
-        .map_err(|e| format!("Failed to initialize schema: {e}"))?;
-
-        debug!("Database schema initialized");
-        Ok(())
+        .map_err(|e| format!("Failed to apply migration 0->1: {e}"))?;
+        current_version = 1;
     }
+
+    // Set user_version to the latest version after all migrations match
+    if current_version == LATEST_VERSION {
+        // PRAGMA statements cannot use parameterized placeholders like ?1
+        let pragma_query = format!("PRAGMA user_version = {}", LATEST_VERSION);
+        conn.execute(&pragma_query, [])
+            .map_err(|e| format!("Failed to update user_version: {e}"))?;
+    }
+
+    Ok(())
+}
 
     // ── Contract CRUD ───────────────────────────────────────────
 
@@ -1397,5 +1430,109 @@ fn str_to_severity(s: &str) -> Severity {
         "warning" => Severity::Warning,
         "info" => Severity::Info,
         _ => Severity::Error,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    #[test]
+    fn test_migration_0_to_1() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Version starts at 0
+        let initial_version: u32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
+        assert_eq!(initial_version, 0);
+
+        // Run migrations
+        Storage::run_migrations(&conn, initial_version).unwrap();
+
+        // Version should be 1
+        let new_version: u32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
+        assert_eq!(new_version, 1);
+
+        // Tables should exist
+        let mut stmt = conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='contracts'").unwrap();
+        let exists = stmt.exists([]).unwrap();
+        assert!(exists);
+    }
+
+    #[test]
+    fn test_migration_1_to_1_no_op() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA user_version = 1; CREATE TABLE dummy (id INTEGER);").unwrap();
+
+        // Version starts at 1
+        let initial_version: u32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
+        assert_eq!(initial_version, 1);
+
+        // Run migrations
+        Storage::run_migrations(&conn, initial_version).unwrap();
+
+        // Version should still be 1
+        let new_version: u32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
+        assert_eq!(new_version, 1);
+
+        // Should not have created contracts table since version was already 1
+        let mut stmt = conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='contracts'").unwrap();
+        let exists = stmt.exists([]).unwrap();
+        assert!(!exists);
+    }
+
+    #[test]
+    fn test_migration_1_to_2_simulation() {
+        let conn = Connection::open_in_memory().unwrap();
+        
+        // Setup initial schema as if we were at v1
+        conn.execute_batch(
+            "
+            CREATE TABLE agents (
+                id              TEXT PRIMARY KEY,
+                trust_score     REAL NOT NULL DEFAULT 100.0
+            );
+            PRAGMA user_version = 1;
+            "
+        ).unwrap();
+
+        // Define a modified run_migrations function just for this simulation purpose to show 1->2 flow
+        fn simulated_run_migrations(conn: &Connection, mut current_version: u32) -> Result<(), String> {
+            const LATEST_VERSION: u32 = 2;
+            
+            if current_version == 0 {
+                // v0 -> v1 schema
+                // ...
+                current_version = 1;
+            }
+
+            if current_version == 1 {
+                conn.execute_batch("ALTER TABLE agents ADD COLUMN description TEXT DEFAULT '';")
+                    .map_err(|e| format!("Failed to apply migration 1->2: {e}"))?;
+                current_version = 2;
+            }
+
+            if current_version == LATEST_VERSION {
+                let pragma_query = format!("PRAGMA user_version = {}", LATEST_VERSION);
+                conn.execute(&pragma_query, []).map_err(|e| format!("Failed to update user_version: {e}"))?;
+            }
+
+            Ok(())
+        }
+
+        // Current version is 1
+        let initial_version: u32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
+        assert_eq!(initial_version, 1);
+
+        // Run simulated migrations
+        simulated_run_migrations(&conn, initial_version).unwrap();
+
+        // Check user_version is 2
+        let new_version: u32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
+        assert_eq!(new_version, 2);
+
+        // Check new column exists
+        conn.execute("INSERT INTO agents (id, description) VALUES ('agent1', 'test')", []).unwrap();
+        let desc: String = conn.query_row("SELECT description FROM agents WHERE id = 'agent1'", [], |row| row.get(0)).unwrap();
+        assert_eq!(desc, "test");
     }
 }
