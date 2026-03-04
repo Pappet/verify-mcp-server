@@ -1,23 +1,77 @@
 name-template: 'v$RESOLVED_VERSION'
 tag-template: 'v$RESOLVED_VERSION'
-categories:
-  - title: '🚀 Features'
-    labels:
-      - 'feature'
-  - title: '🐛 Bug Fixes'
-    labels:
-      - 'fix'
-  - title: '💥 Breaking Changes'
+
+# Version resolution based on labels
+version-resolver:
+  major:
     labels:
       - 'breaking'
-  - title: '🔒 Security'
+  minor:
     labels:
-      - 'security'
+      - 'enhancement'
+  patch:
+    labels:
+      - 'bug'
+      - 'documentation'
+      - 'chore'
+  default: patch
+
+# Group PRs into sections by label
+categories:
+  - title: '⚠️ Breaking Changes'
+    labels:
+      - 'breaking'
+  - title: '🚀 Features'
+    labels:
+      - 'enhancement'
+  - title: '🐛 Bug Fixes'
+    labels:
+      - 'bug'
   - title: '📝 Documentation'
     labels:
-      - 'docs'
+      - 'documentation'
+  - title: '🧹 Maintenance'
+    labels:
+      - 'chore'
+      - 'ci'
+      - 'refactor'
+
+# Exclude certain labels from release notes
+exclude-labels:
+  - 'skip-changelog'
+
 change-template: '- $TITLE @$AUTHOR (#$NUMBER)'
+
+# Template for the release body
 template: |
-  ## Changes
+  ## What's Changed
 
   $CHANGES
+
+  **Full Changelog**: https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION
+
+# Auto-label PRs based on file paths
+autolabeler:
+  - label: 'comp: verification'
+    files:
+      - 'src/verification/**'
+  - label: 'comp: protocol'
+    files:
+      - 'src/protocol.rs'
+      - 'src/tools.rs'
+  - label: 'comp: sandbox'
+    files:
+      - 'src/sandbox.rs'
+  - label: 'comp: storage'
+    files:
+      - 'src/storage.rs'
+  - label: 'comp: templates'
+    files:
+      - 'src/templates.rs'
+      - 'src/contract.rs'
+  - label: 'documentation'
+    files:
+      - '*.md'
+  - label: 'ci'
+    files:
+      - '.github/**'
